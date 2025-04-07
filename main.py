@@ -92,14 +92,6 @@ def run_arg(arg):
     arg.datarow['relative error (auto2)'] = np.nan
     arg.datarow['relative error (auto4)'] = np.nan
 
-    # Initialize distributed mode
-    # if getattr(arg.setup, "distributed", False):
-    #     init_distributed_mode(arg)
-    #     torch.cuda.set_device(arg.setup.local_rank)
-    #     arg.setup.device = f"cuda:{arg.setup.local_rank}"
-    # else:
-    #     arg.setup.device = arg.setup.device
-
     Trainer = {
         "static3d": StaticTrainer3D,
     }[arg.setup["trainer_name"]]
@@ -176,27 +168,6 @@ def run_arg_files(arg_files, is_debug, num_works_per_device=3):
                     p.join()
     else:
         raise NotImplementedError(f"Platform {platform.system()} not supported")
-
-def init_distributed_mode(arg):
-    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        arg.setup.rank = int(os.environ['RANK'])
-        arg.setup.world_size = int(os.environ['WORLD_SIZE'])
-        arg.setup.local_rank = int(os.environ.get('LOCAL_RANK', 0))
-    else:
-        print('Not using distributed mode')
-        arg.setup.distributed = False
-        arg.setup.rank = 0
-        arg.setup.world_size = 1
-        arg.setup.local_rank = 0
-        return
-
-    dist.init_process_group(
-        backend=arg.setup.backend,
-        init_method='env://',
-        world_size=arg.setup.world_size,
-        rank=arg.setup.rank
-    )
-    dist.barrier()
 
 if __name__ == '__main__':
     config = parse_files()

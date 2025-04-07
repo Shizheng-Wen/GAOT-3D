@@ -59,17 +59,18 @@ class NeighborSearch(nn.Module):
                 Keys: 'neighbors_index', 'neighbors_row_splits' in CSR format.
             """
 
-            data = data.to(device = device)
+            data = data.to(device=device)
             queries = queries.to(device=device)
-            
-            # Perform radius search
-            row, col = torch_cluster_radius(data, queries, radi)
-            
-            # Convert to CSR format
+
+
+            row, col = torch_cluster_radius(data, queries, radi)        
+            num_queries = queries.shape[0]
             neighbors_index = col.long()
-            neighbors_row_splits = torch.bincount(row).cumsum(0)
+            counts = torch.bincount(row, minlength=num_queries)
+
+            neighbors_row_splits = counts.cumsum(0)
             neighbors_row_splits = torch.cat([torch.tensor([0], device=row.device), neighbors_row_splits]).long()
-            
+
             return {
                 'neighbors_index': neighbors_index,
                 'neighbors_row_splits': neighbors_row_splits

@@ -2,6 +2,7 @@ import os
 import time
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 import xarray as xr
 import matplotlib.pyplot as plt
@@ -9,7 +10,7 @@ import numpy as np
 
 from .base import TrainerBase
 from .utils.metric import compute_batch_errors, compute_final_metric
-from .utils.plot import plot_estimates
+from .utils.plot import plot_3d_comparison_pyvista, plot_3d_comparison_matplotlib
 from .utils.data_pairs import CustomDataset
 
 
@@ -190,12 +191,21 @@ class StaticTrainer3D(TrainerBase):
                 encoder_graphs = encoder_graphs_train,
                 decoder_graphs = decoder_graphs_train)
             
+            train_sampler = None
+            if self.setup_config.distributed:
+                train_sampler = DistributedSampler(
+                    train_ds,
+                    num_replicas=self.setup_config.world_size,
+                    rank=self.setup_config.local_rank
+                )
+
             self.train_loader = DataLoader(
                 train_ds,
                 batch_size = dataset_config.batch_size,
-                shuffle = dataset_config.shuffle,
+                shuffle = (train_sampler is None and dataset_config.shuffle),
                 collate_fn = custom_collate_fn,
-                num_workers = dataset_config.num_workers
+                num_workers = dataset_config.num_workers,
+                sampler=train_sampler
             )
 
             encoder_graphs_val = []
@@ -273,8 +283,8 @@ class StaticTrainer3D(TrainerBase):
             inputs = x_test,
             labels = u_test, 
             coords = x_test,
-            encoder_graphs = encoder_graphs_val,
-            decoder_graphs = decoder_graphs_val)
+            encoder_graphs = encoder_graphs_test,
+            decoder_graphs = decoder_graphs_test)
 
         self.test_loader = DataLoader(
             test_ds, 
@@ -290,7 +300,15 @@ class StaticTrainer3D(TrainerBase):
             model=model_config.name,
             config=model_config.args
             )
-
+        self.model.to(self.device)
+        
+        if self.setup_config.distributed:
+            self.model = torch.nn.parallel.DistributedDataParallel(
+                self.model,
+                device_ids=[self.setup_config.local_rank],
+                output_device=self.setup_config.local_rank
+            )
+        
     def train_step(self, batch):
         x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = batch
         x_batch, y_batch, coord_batch = x_batch.to(self.device), y_batch.to(self.device), coord_batch.to(self.device)
@@ -330,6 +348,8 @@ class StaticTrainer3D(TrainerBase):
         self.model.eval()
         self.model.to(self.device)
         all_relative_errors = []
+        first_batch_plotted = False
+
         with torch.no_grad():
             for i, (x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch) in enumerate(self.test_loader):
                 x_batch, y_batch, coord_batch = x_batch.to(self.device), y_batch.to(self.device), coord_batch.to(self.device) # Shape: [batch_size, num_timesteps, num_nodes, num_channels]
@@ -347,22 +367,49 @@ class StaticTrainer3D(TrainerBase):
                 y_sample_de_norm = y_batch * self.u_std.to(self.device) + self.u_mean.to(self.device)
                 relative_errors = compute_batch_errors(y_sample_de_norm, pred_de_norm, self.metadata)
                 all_relative_errors.append(relative_errors)
+
+                if i == 0 and not first_batch_plotted:
+                    try:
+                        # Select the last sample in the batch for visualization
+                        vis_idx = -1
+                        coords_np = coord_batch[vis_idx].cpu().numpy()
+
+                        # --- Select which channel to visualize (e.g., the first one) ---
+                        channel_to_plot = 0
+                        if pred_de_norm.shape[-1] <= channel_to_plot:
+                           print(f"Warning: Channel {channel_to_plot} requested for plotting, but model output only has {pred_de_norm.shape[-1]} channels. Defaulting to channel 0.")
+                           channel_to_plot = 0
+                        # -------------------------------------------------------------
+
+                        gtr_np = y_sample_de_norm[vis_idx, :, channel_to_plot].cpu().numpy()
+                        prd_np = pred_de_norm[vis_idx, :, channel_to_plot].cpu().numpy()
+
+                        # Get variable name from metadata
+                        try:
+                            var_name = self.metadata.names['u'][self.metadata.active_variables[channel_to_plot]]
+                        except (IndexError, KeyError, TypeError):
+                            var_name = f"Channel {channel_to_plot}"
+                            print(f"Warning: Could not retrieve variable name for channel {channel_to_plot}. Using default.")
+
+
+                        # Call the PyVista plotting function
+                        plot_3d_comparison_matplotlib(
+                            coords=coords_np,
+                            u_gtr=gtr_np,
+                            u_prd=prd_np,
+                            save_path=self.path_config.result_path, # Use configured path
+                            variable_name=var_name,
+                            point_size= 2.0,
+                            view_angle= (20, -120)
+                            # Optional: adjust point_size, cmap, dpi, view_angle here if needed
+                        )
+                        first_batch_plotted = True
+                    except Exception as plot_err:
+                        print(f"Error during 3D plotting of first batch sample: {plot_err}")
+
         all_relative_errors = torch.cat(all_relative_errors, dim=0)
         final_metric = compute_final_metric(all_relative_errors)
-        self.config.datarow["relative error (direct)"] = final_metric
-        print(f"relative error: {final_metric}")
 
-        # x_sample_de_norm = x_batch * self.c_std.to(self.device) + self.c_mean.to(self.device)
-
-        # fig = plot_estimates(
-        #     u_inp = x_sample_de_norm[-1].cpu().numpy(), 
-        #     u_gtr = y_sample_de_norm[-1].cpu().numpy(), 
-        #     u_prd = pred_de_norm[-1].cpu().numpy(), 
-        #     x_inp = coord_batch[-1].cpu().numpy(),
-        #     x_out = coord_batch[-1].cpu().numpy(),
-        #     names = self.metadata.names['c'],
-        #     symmetric = self.metadata.signed['u'],
-        #     domain = self.metadata.domain_x)
-
-        # fig.savefig(self.path_config.result_path,dpi=300,bbox_inches="tight", pad_inches=0.1)
-        # plt.close(fig)
+        if self.setup_config.rank == 0:
+            self.config.datarow["relative error (direct)"] = final_metric
+            print(f"relative error: {final_metric}")

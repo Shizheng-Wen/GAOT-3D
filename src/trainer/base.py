@@ -143,13 +143,14 @@ class TrainerBase:
         return total_loss / len(loader)
 
     def fit(self, verbose=False):
-        self.to(self.device)
+        #self.to(self.device)
         #self.type(self.dtype)
 
         result = self.optimizer.optimize(self)
-        self.config.datarow['training time'] = result['time']
-        
-        self.save_ckpt()
+
+        if self.setup_config.rank == 0:
+            self.config.datarow['training time'] = result['time']
+            self.save_ckpt()
 
         if len(result['train']['loss'])==0:
             if self.setup_config.use_variance_test:
@@ -170,9 +171,8 @@ class TrainerBase:
                 kwargs['best_epoch'] = result['best']['epoch']
                 kwargs['best_loss']  = result['best']['loss']
             
-            self.plot_losses(
-                **kwargs
-            )
+            if self.setup_config.rank == 0:
+                self.plot_losses(**kwargs)
 
             if self.setup_config.use_variance_test:
                 self.variance_test()
