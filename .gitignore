@@ -1,0 +1,25 @@
+.DS_Store
+
+.results/
+.loss/
+.ckpt/
+.database/
+.database_old/
+.vscode/
+
+
+**__pycache__**
+
+slurmjob/**
+#!slurmjob/*.sh
+
+
+# config/*
+# !config/tpl/
+# !config/tpl/**
+# #!config/gaot/
+
+
+tests/preprocess/*
+tests/postprocess/*
+log/*
