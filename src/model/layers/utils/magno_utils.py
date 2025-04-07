@@ -23,24 +23,19 @@ class NeighborSearch(nn.Module):
     use_open3d : bool
         Whether to use open3d or native PyTorch implementation
         NOTE: open3d implementation requires 3d data
+    use_torch_cluster: bool
+        Whether to use torch_cluster for finding neighbors.
     """
-    def __init__(self, use_open3d=True, use_torch_cluster = False):
+    def __init__(self, use_torch_cluster = False):
         super().__init__()
         if use_torch_cluster:
-            self.search_fn = self.torch_cluster_search
+            self.search_fn = self._torch_cluster_search
             self.use_torch_cluster = True
-            self.use_open3d = False
-        elif use_open3d: # slightly faster, works on GPU in 3d only
-            from open3d.ml.torch.layers import FixedRadiusSearch
-            self.search_fn = FixedRadiusSearch()
-            self.use_torch_cluster = False
-            self.use_open3d = True
         else: # slower fallback, works on GPU and CPU
-            self.search_fn = native_neighbor_search
+            self.search_fn = self._native_neighbor_search # Use internal name
             self.use_torch_cluster = False
-            self.use_open3d = False
 
-    def torch_cluster_search(self, data, queries, radi, device = "cpu"):
+    def _torch_cluster_search(self, data, queries, radi, device = "cpu"):
             """
             Perform fixed radius search using torch_cluster.radius.
             
@@ -62,21 +57,28 @@ class NeighborSearch(nn.Module):
             data = data.to(device=device)
             queries = queries.to(device=device)
 
+            row, col = torch_cluster_radius(data, queries, radi)
 
-            row, col = torch_cluster_radius(data, queries, radi)        
             num_queries = queries.shape[0]
+
             neighbors_index = col.long()
             counts = torch.bincount(row, minlength=num_queries)
-
             neighbors_row_splits = counts.cumsum(0)
-            neighbors_row_splits = torch.cat([torch.tensor([0], device=row.device), neighbors_row_splits]).long()
+            zero_tensor = torch.tensor([0], device=row.device, dtype=torch.long)
+            neighbors_row_splits = torch.cat([zero_tensor, neighbors_row_splits]).long()
 
             return {
                 'neighbors_index': neighbors_index,
                 'neighbors_row_splits': neighbors_row_splits
             }
-        
-    def forward(self, data, queries, radi, devices = "cpu"):
+    
+    def _native_neighbor_search(self, data, queries, radi, device="cpu"):
+        data_comp = data.to(device=device)
+        queries_comp = queries.to(device=device)
+
+        return native_neighbor_search(data_comp, queries_comp, radi)
+
+    def forward(self, data, queries, radi, device = "cpu"):
         """Find the neighbors, in data, of each point in queries
         within a ball of radius. Returns in CRS format.
 
@@ -108,17 +110,15 @@ class NeighborSearch(nn.Module):
                     neighbors up to query point j-1. First element is 0
                     and last element is the total number of neighbors.
         """
-        return_dict = {}
         if self.use_torch_cluster:
-            return_dict = self.torch_cluster_search(data, queries, radi, device=devices)
-        elif self.use_open3d:
-            search_return = self.search_fn(data, queries, radi)
-            return_dict['neighbors_index'] = search_return.neighbors_index.long()
-            return_dict['neighbors_row_splits'] = search_return.neighbors_row_splits.long()
+             result_dict = self._torch_cluster_search(data, queries, radi, device=device)
         else:
-            return_dict = self.search_fn(data, queries, radi)
-        
-        return return_dict
+             result_dict = self._native_neighbor_search(data, queries, radi, device=device)
+
+        return {
+            'neighbors_index': result_dict['neighbors_index'].cpu(),
+            'neighbors_row_splits': result_dict['neighbors_row_splits'].cpu()
+        }
 
 def native_neighbor_search(data: torch.Tensor, queries: torch.Tensor, radius: torch.Tensor):
     """

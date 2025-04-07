@@ -132,7 +132,6 @@ class StaticTrainer3D(TrainerBase):
         print("Starting Graph Build ...")
         graph_start_time = time.time()
         nb_search = NeighborSearch(
-            use_open3d = self.model_config.args.magno.gno_use_open3d,
             use_torch_cluster=self.model_config.args.magno.gno_use_torch_cluster)
         gno_radius = self.model_config.args.magno.gno_radius
         scales = self.model_config.args.magno.scales
@@ -169,7 +168,8 @@ class StaticTrainer3D(TrainerBase):
                         nbrs = nb_search(
                             data = x_coord, 
                             queries = self.latent_tokens, 
-                            radi = scaled_radius)
+                            radi = scaled_radius,
+                            device = self.device)
                     encoder_nbrs.append(nbrs)
                 encoder_graphs_train.append(encoder_nbrs)
 
@@ -180,7 +180,8 @@ class StaticTrainer3D(TrainerBase):
                         nbrs = nb_search(
                             data = self.latent_tokens, 
                             queries = x_coord, 
-                            radi = scaled_radius)
+                            radi = scaled_radius,
+                            device = self.device)
                     decoder_nbrs.append(nbrs)
                 decoder_graphs_train.append(decoder_nbrs)
 
@@ -219,7 +220,8 @@ class StaticTrainer3D(TrainerBase):
                         nbrs = nb_search(
                             data = x_coord, 
                             queries = self.latent_tokens, 
-                            radi = scaled_radius)
+                            radi = scaled_radius,
+                            device = self.device)
                     encoder_nbrs.append(nbrs)
                 encoder_graphs_val.append(encoder_nbrs)
 
@@ -230,7 +232,8 @@ class StaticTrainer3D(TrainerBase):
                         nbrs = nb_search(
                             data = self.latent_tokens,
                             queries = x_coord, 
-                            radi = scaled_radius)
+                            radi = scaled_radius,
+                            device = self.device)
                     decoder_nbrs.append(nbrs)
                 decoder_graphs_val.append(decoder_nbrs)
             
@@ -261,7 +264,8 @@ class StaticTrainer3D(TrainerBase):
                     nbrs = nb_search(
                         data = x_coord, 
                         queries = self.latent_tokens, 
-                        radi = scaled_radius)
+                        radi = scaled_radius,
+                        device = self.device)
                 encoder_nbrs.append(nbrs)
             encoder_graphs_test.append(encoder_nbrs)
 
@@ -273,7 +277,8 @@ class StaticTrainer3D(TrainerBase):
                     nbrs = nb_search(
                         data = self.latent_tokens, 
                         queries = x_coord, 
-                        radi = scaled_radius)
+                        radi = scaled_radius,
+                        device = self.device)
                 decoder_nbrs.append(nbrs)
             decoder_graphs_test.append(decoder_nbrs)
         

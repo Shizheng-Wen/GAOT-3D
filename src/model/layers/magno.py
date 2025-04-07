@@ -8,7 +8,7 @@ import numpy as np
 from dataclasses import dataclass, replace, field
 from typing import Union, Tuple, Optional
 
-from .utils.magno_utils import Activation, segment_csr, NeighborSearch
+from .utils.magno_utils import Activation, segment_csr
 from .utils.geoembed import GeometricEmbedding
 from .mlp import LinearChannelMLP, ChannelMLP
 
@@ -29,7 +29,6 @@ class MAGNOConfig:
     scales: list = field(default_factory=lambda: [1.0])
     use_scale_weights: bool = False
     use_graph_cache: bool = True
-    gno_use_open3d: bool = False
     gno_use_torch_cluster: bool = False
     in_gno_transform_type: str = 'linear'
     out_gno_transform_type: str = 'linear'
@@ -320,7 +319,6 @@ class IntegralTransform(nn.Module):
 class GNOEncoder(nn.Module):
     def __init__(self, in_channels, out_channels, gno_config):
         super().__init__()
-        self.nb_search = NeighborSearch(gno_config.gno_use_open3d)
         self.gno_radius = gno_config.gno_radius
         self.graph_cache = None 
         self.use_graph_cache = gno_config.use_graph_cache
@@ -404,10 +402,6 @@ class GNOEncoder(nn.Module):
     
             encoded_scales = []
             for scale_idx, scale_nbrs in enumerate(encoder_nbrs[b]):
-                #scaled_radius = radii * scale
-                # scaled_radius = self.gno_radius * scale
-                # with torch.no_grad():
-                #     spatial_nbrs = self.nb_search(x_b, latent_queries, scaled_radius)
                 encoded_unpatched = self.gno(
                     y = x_b,
                     x = latent_queries,
@@ -447,7 +441,6 @@ class GNOEncoder(nn.Module):
 class GNODecoder(nn.Module):
     def __init__(self, in_channels, out_channels, gno_config):
         super().__init__()
-        self.nb_search = NeighborSearch(gno_config.gno_use_open3d)
         self.gno_radius = gno_config.gno_radius
         self.graph_cache = None
         self.use_graph_cache = gno_config.use_graph_cache
@@ -533,10 +526,6 @@ class GNODecoder(nn.Module):
             decoded_scales = []
             #radii = minimal_support(latent_queries_b)
             for scale_idx, scale_nbrs in enumerate(decoder_nbrs[b]):
-                # scaled_radius = self.gno_radius * scale
-                # #scaled_radius = radii * scale
-                # with torch.no_grad():
-                #     spatial_nbrs = self.nb_search(x, latent_queries_b, scaled_radius)
                 decoded_unpatched = self.gno(
                     y = x,
                     x = latent_queries_b,
