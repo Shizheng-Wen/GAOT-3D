@@ -217,7 +217,6 @@ class IntegralTransform(nn.Module):
             neighbors["neighbors_row_splits"][1:]
             - neighbors["neighbors_row_splits"][:-1]
         )
-
         self_features = torch.repeat_interleave(x, num_reps, dim=0)
 
         # attention usage

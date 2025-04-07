@@ -5,9 +5,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch.distributed as dist
 
-from .optimizers import AdamOptimizer, AdamWOptimizer, FinetuningOptimizer, WaveFDOptimizer
-from .utils import manual_seed, load_ckpt, save_ckpt
-from .utils import SetUpConfig, GraphConfig, ModelConfig, DatasetConfig, OptimizerConfig, PathConfig, merge_config
+from .optimizers import AdamOptimizer, AdamWOptimizer
+from .utils.setup import manual_seed, load_ckpt, save_ckpt
+from .utils.default_set import SetUpConfig, ModelConfig, DatasetConfig, OptimizerConfig, PathConfig, merge_config
 from ..data.dataset import DATASET_METADATA
 
 class TrainerBase:
@@ -71,14 +71,10 @@ class TrainerBase:
 
     def init_optimizer(self, optimizer_config):
         """Initialize the optimizer"""
-        if self.optimizer_config.name == "finetune":
-            self.optimizer = FinetuningOptimizer(self.model, self.optimizer_config.args)
-        else:
-            self.optimizer = {
-                "adam": AdamOptimizer,
-                "adamw": AdamWOptimizer,
-                "wavefd": WaveFDOptimizer
-            }[self.optimizer_config.name](self.model.parameters(), self.optimizer_config.args)
+        self.optimizer = {
+            "adam": AdamOptimizer,
+            "adamw": AdamWOptimizer
+        }[self.optimizer_config.name](self.model.parameters(), self.optimizer_config.args)
 
     def init_distributed_mode(self):
         if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:

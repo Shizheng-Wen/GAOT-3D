@@ -3,7 +3,7 @@ from typing import Optional, Tuple, Union, List
 
 # model default config
 from ...model.layers.attn import TransformerConfig
-from ...model.layers.magno import GNOConfig
+from ...model.layers.magno import MAGNOConfig
 
 from ..optimizers import OptimizerargsConfig
 
@@ -19,7 +19,7 @@ class SetUpConfig:
     seed: int = 42                                          
     device: str = "cuda:0"
     dtype: str = "torch.float32"
-    trainer_name: str = "sequential"                                        # [static, static_unstruc, sequential]
+    trainer_name: str = "static3d"                                        # [static, static_unstruc, sequential]
     train: bool = True
     test: bool = False
     ckpt: bool = False
@@ -38,7 +38,7 @@ class SetUpConfig:
 @dataclass
 class ModelArgsConfig:
     latent_tokens: Tuple[int, int, int] = (64, 64, 64)                       # (D, H, W)
-    gno: GNOConfig = field(default_factory=GNOConfig)
+    magno: MAGNOConfig = field(default_factory=MAGNOConfig)
     transformer: TransformerConfig = field(default_factory=TransformerConfig)
 
 @dataclass

@@ -75,7 +75,7 @@ class NeighborSearch(nn.Module):
                 'neighbors_row_splits': neighbors_row_splits
             }
         
-    def forward(self, data, queries, radius, devices = "cpu"):
+    def forward(self, data, queries, radi, devices = "cpu"):
         """Find the neighbors, in data, of each point in queries
         within a ball of radius. Returns in CRS format.
 
@@ -109,13 +109,13 @@ class NeighborSearch(nn.Module):
         """
         return_dict = {}
         if self.use_torch_cluster:
-            return_dict = self.torch_cluster_search(data, queries, radius, device=devices)
+            return_dict = self.torch_cluster_search(data, queries, radi, device=devices)
         elif self.use_open3d:
-            search_return = self.search_fn(data, queries, radius)
+            search_return = self.search_fn(data, queries, radi)
             return_dict['neighbors_index'] = search_return.neighbors_index.long()
             return_dict['neighbors_row_splits'] = search_return.neighbors_row_splits.long()
         else:
-            return_dict = self.search_fn(data, queries, radius)
+            return_dict = self.search_fn(data, queries, radi)
         
         return return_dict
 

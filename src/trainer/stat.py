@@ -8,16 +8,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .base import TrainerBase
-from .utils import compute_batch_errors, compute_final_metric
+from .utils.metric import compute_batch_errors, compute_final_metric
 from .utils.plot import plot_estimates
 from .utils.data_pairs import CustomDataset
-from ..utils import shallow_asdict
+
 
 from src.data.dataset import Metadata, DATASET_METADATA
 from src.model import init_model
-
 from src.model.layers.utils.magno_utils import NeighborSearch
+
 from src.utils.scale import rescale
+from src.utils.dataclass import shallow_asdict
 
 EPSILON = 1e-10
 
@@ -59,8 +60,9 @@ class StaticTrainer3D(TrainerBase):
     
         active_vars = self.metadata.active_variables
         u_array = u_array[..., active_vars]
+        self.num_input_channels = x_array.shape[-1]
         self.num_output_channels = u_array.shape[-1]
-
+        
         # Compute dataset sizes
         total_samples = u_array.shape[0]
         train_size = dataset_config.train_size
@@ -129,10 +131,10 @@ class StaticTrainer3D(TrainerBase):
         print("Starting Graph Build ...")
         graph_start_time = time.time()
         nb_search = NeighborSearch(
-            use_open3d = self.model_config.args.gno.gno_use_open3d,
-            use_torch_cluster=self.model_config.args.gno.gno_use_torch_cluster)
-        gno_radius = self.model_config.args.gno.gno_radius
-        scales = self.model_config.args.gno.scales
+            use_open3d = self.model_config.args.magno.gno_use_open3d,
+            use_torch_cluster=self.model_config.args.magno.gno_use_torch_cluster)
+        gno_radius = self.model_config.args.magno.gno_radius
+        scales = self.model_config.args.magno.scales
         phy_domain = self.metadata.domain_x
         x_min, y_min, z_min = phy_domain[0]
         x_max, y_max, z_max = phy_domain[1]
@@ -163,11 +165,10 @@ class StaticTrainer3D(TrainerBase):
                 for scale in scales:
                     scaled_radius = gno_radius * scale
                     with torch.no_grad():
-                        nbrs = nb_search.torch_cluster_search(
+                        nbrs = nb_search(
                             data = x_coord, 
                             queries = self.latent_tokens, 
-                            radi = scaled_radius,
-                            device = self.device)
+                            radi = scaled_radius)
                     encoder_nbrs.append(nbrs)
                 encoder_graphs_train.append(encoder_nbrs)
 
@@ -175,11 +176,10 @@ class StaticTrainer3D(TrainerBase):
                 for scale in scales:
                     scaled_radius = gno_radius * scale
                     with torch.no_grad():
-                        nbrs = nb_search.torch_cluster_search(
+                        nbrs = nb_search(
                             data = self.latent_tokens, 
                             queries = x_coord, 
-                            radi = scaled_radius,
-                            device = self.device)
+                            radi = scaled_radius)
                     decoder_nbrs.append(nbrs)
                 decoder_graphs_train.append(decoder_nbrs)
 
@@ -206,11 +206,10 @@ class StaticTrainer3D(TrainerBase):
                 for scale in scales:
                     scaled_radius = gno_radius * scale
                     with torch.no_grad():
-                        nbrs = nb_search.torch_cluster_search(
+                        nbrs = nb_search(
                             data = x_coord, 
                             queries = self.latent_tokens, 
-                            radi = scaled_radius,
-                            device = self.device)
+                            radi = scaled_radius)
                     encoder_nbrs.append(nbrs)
                 encoder_graphs_val.append(encoder_nbrs)
 
@@ -218,11 +217,10 @@ class StaticTrainer3D(TrainerBase):
                 for scale in scales:
                     scaled_radius = gno_radius * scale
                     with torch.no_grad():
-                        nbrs = nb_search.torch_cluster_search(
+                        nbrs = nb_search(
                             data = self.latent_tokens,
                             queries = x_coord, 
-                            radi = scaled_radius,
-                            device = self.device)
+                            radi = scaled_radius)
                     decoder_nbrs.append(nbrs)
                 decoder_graphs_val.append(decoder_nbrs)
             
@@ -250,23 +248,22 @@ class StaticTrainer3D(TrainerBase):
             for scale in scales:
                 scaled_radius = gno_radius * scale
                 with torch.no_grad():
-                    nbrs = nb_search.torch_cluster_search(
+                    nbrs = nb_search(
                         data = x_coord, 
                         queries = self.latent_tokens, 
-                        radi = scaled_radius,
-                        device = self.device)
+                        radi = scaled_radius)
                 encoder_nbrs.append(nbrs)
             encoder_graphs_test.append(encoder_nbrs)
+
 
             decoder_nbrs = []
             for scale in scales:
                 scaled_radius = gno_radius * scale
                 with torch.no_grad():
-                    nbrs = nb_search.torch_cluster_search(
+                    nbrs = nb_search(
                         data = self.latent_tokens, 
                         queries = x_coord, 
-                        radi = scaled_radius,
-                        device = self.device)
+                        radi = scaled_radius)
                 decoder_nbrs.append(nbrs)
             decoder_graphs_test.append(decoder_nbrs)
         
@@ -278,7 +275,7 @@ class StaticTrainer3D(TrainerBase):
             coords = x_test,
             encoder_graphs = encoder_graphs_val,
             decoder_graphs = decoder_graphs_val)
-        
+
         self.test_loader = DataLoader(
             test_ds, 
             batch_size=dataset_config.batch_size, 

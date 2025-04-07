@@ -14,7 +14,7 @@ from sklearn.decomposition import PCA
 
 
 from ...data.dataset import Metadata
-from .cal_metric import compute_batch_errors, compute_final_metric
+from .metric import compute_batch_errors, compute_final_metric
 
 C_BLACK = '#000000'
 C_WHITE = '#ffffff'

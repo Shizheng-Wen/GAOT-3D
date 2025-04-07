@@ -19,7 +19,7 @@ def init_model(input_size:int,
         return GAOT3D(
             input_size=input_size,
             output_size=output_size,
-            gno_config=config.magno,
+            magno_config=config.magno,
             attn_config=config.transformer,
             latent_tokens=config.latent_tokens
         )

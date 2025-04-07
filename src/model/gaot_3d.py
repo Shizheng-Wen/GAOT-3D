@@ -72,9 +72,14 @@ class GAOT3D(nn.Module):
             gno_config=magno_config
         )
 
-    def encode(self, x: torch.Tensor, latent_queries: torch.Tensor, pndata: torch.Tensor, encoder_nbrs: list) -> torch.Tensor:
+    def encode(self, pndata: torch.Tensor, x_coord: torch.Tensor, token_coord: torch.Tensor, encoder_nbrs: list) -> torch.Tensor:
         # Apply GNO encoder
-        encoded = self.encoder(x, latent_queries, pndata, encoder_nbrs)
+        encoded = self.encoder(
+            pndata = pndata,
+            x_coord= x_coord,
+            token_coord = token_coord,
+            encoder_nbrs = encoder_nbrs
+        )
         return encoded
 
     def process(self,
@@ -136,9 +141,13 @@ class GAOT3D(nn.Module):
 
         return rndata
 
-    def decode(self, x: torch.Tensor, latent_queries: torch.Tensor, rndata: torch.Tensor, decoder_nbrs: list) -> torch.Tensor:
+    def decode(self, rndata: torch.Tensor, x_coord: torch.Tensor, token_coord: torch.Tensor, decoder_nbrs: list) -> torch.Tensor:
         # Apply GNO decoder
-        decoded = self.decoder(x, latent_queries, rndata, decoder_nbrs)
+        decoded = self.decoder(
+            rndata = rndata,
+            x_coord = x_coord,
+            token_coord = token_coord,
+            decoder_nbrs = decoder_nbrs)
         return decoded
 
     def forward(self,

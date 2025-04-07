@@ -14,8 +14,8 @@
         "name": "gaot_3d",
         "use_conditional_norm": false,
         "args": {
-            "latent_tokens": [64,64,64],
-            "gno": {
+            "latent_tokens": [32,32,32],
+            "magno": {
                 "gno_coord_dim": 3,
                 "projection_channels": 256,
                 "in_gno_channel_mlp_hidden_layers": [64,64,64],
@@ -29,7 +29,7 @@
                 "embedding_method": "statistical"
             },
             "transformer": {
-                "patch_size": 8,
+                "patch_size": 4,
                 "hidden_size": 256,
                 "use_attn_norm": true,
                 "use_ffn_norm": true,
@@ -60,10 +60,9 @@
         "train_size": 40,
         "val_size": 128,
         "test_size": 256,
-        "batch_size": 64,
+        "batch_size": 10,
         "num_workers": 4,
-        "shuffle": true,
-        "rand_dataset": true
+        "shuffle": true
     },
     "optimizer": {
         "name": "adamw",
