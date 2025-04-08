@@ -4,8 +4,8 @@
         "device": "cuda:0",
         "dtype": "torch.float32",
         "trainer_name": "static3d",
-        "train": true,
-        "test": false,
+        "train": false,
+        "test": true,
         "ckpt": false,
         "use_variance_test": false,
         "distributed": true
@@ -60,9 +60,10 @@
         "train_size": 5817,
         "val_size": 1148,
         "test_size": 1154,
-        "batch_size": 30,
+        "batch_size": 25,
         "num_workers": 4,
-        "shuffle": true
+        "shuffle": true,
+        "metric_suite": "general"
     },
     "optimizer": {
         "name": "adamw",

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, Union, List
+from typing import Optional, Tuple, Union, List, Literal
 
 # model default config
 from ...model.layers.attn import TransformerConfig
@@ -70,6 +70,7 @@ class DatasetConfig:
     # Foundation model
     names: List[str] = field(default_factory=lambda: ["Wave-Layer"])
     metanames: List[str] = field(default_factory=lambda: ["rigno-unstructured/Wave-Layer"])
+    metric_suite: str = "poseidon"                                          # Literal["poseidon", "general"]
 
 @dataclass
 class OptimizerConfig:

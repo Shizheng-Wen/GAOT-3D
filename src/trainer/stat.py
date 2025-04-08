@@ -9,7 +9,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .base import TrainerBase
-from .utils.metric import compute_batch_errors, compute_final_metric
+from .utils.metric import compute_batch_errors, compute_final_metric 
+from .utils.metric import compute_general_metrics_batch, aggregate_general_metrics
 from .utils.plot import plot_3d_comparison_pyvista, plot_3d_comparison_matplotlib
 from .utils.data_pairs import CustomDataset
 
@@ -58,7 +59,7 @@ class StaticTrainer3D(TrainerBase):
             if self.metadata.group_x is not None:
                 x_array = ds[self.metadata.group_x].values # Shape: [num_samples, num_timesteps, num_nodes, num_dims]
             
-    
+        
         active_vars = self.metadata.active_variables
         u_array = u_array[..., active_vars]
         self.num_input_channels = x_array.shape[-1]
@@ -104,7 +105,7 @@ class StaticTrainer3D(TrainerBase):
         # Store statistics as torch tensors
         self.u_mean = torch.tensor(u_mean, dtype=self.dtype)
         self.u_std = torch.tensor(u_std, dtype=self.dtype)
-
+    
         # Normalize data using NumPy operations
         u_train = (u_train - u_mean) / u_std
         u_val = (u_val - u_mean) / u_std
@@ -352,8 +353,12 @@ class StaticTrainer3D(TrainerBase):
     def test(self):
         self.model.eval()
         self.model.to(self.device)
-        all_relative_errors = []
         first_batch_plotted = False
+
+        metric_suite = self.dataset_config.metric_suite
+        all_batch_metrics = []
+        
+        print(f"Starting testing with metric suite: '{metric_suite}'")
 
         with torch.no_grad():
             for i, (x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch) in enumerate(self.test_loader):
@@ -370,51 +375,74 @@ class StaticTrainer3D(TrainerBase):
                     decoder_nbrs = decoder_graph_batch)
                 pred_de_norm = pred * self.u_std.to(self.device) + self.u_mean.to(self.device)
                 y_sample_de_norm = y_batch * self.u_std.to(self.device) + self.u_mean.to(self.device)
-                relative_errors = compute_batch_errors(y_sample_de_norm, pred_de_norm, self.metadata)
-                all_relative_errors.append(relative_errors)
+                
+                if metric_suite == "poseidon":
+                    batch_rel_errors = compute_batch_errors(y_sample_de_norm, pred_de_norm, self.metadata)
+                    all_batch_metrics.append(batch_rel_errors) 
+                elif metric_suite == "general":
+                    batch_metrics_dict = compute_general_metrics_batch(y_sample_de_norm, pred_de_norm)
+                    all_batch_metrics.append(batch_metrics_dict) 
+                else:
+                    raise ValueError(f"Unsupported metric_suite: {metric_suite}")
 
                 if i == 0 and not first_batch_plotted:
                     try:
-                        # Select the last sample in the batch for visualization
                         vis_idx = -1
                         coords_np = coord_batch[vis_idx].cpu().numpy()
-
-                        # --- Select which channel to visualize (e.g., the first one) ---
                         channel_to_plot = 0
                         if pred_de_norm.shape[-1] <= channel_to_plot:
                            print(f"Warning: Channel {channel_to_plot} requested for plotting, but model output only has {pred_de_norm.shape[-1]} channels. Defaulting to channel 0.")
                            channel_to_plot = 0
                         # -------------------------------------------------------------
-
                         gtr_np = y_sample_de_norm[vis_idx, :, channel_to_plot].cpu().numpy()
                         prd_np = pred_de_norm[vis_idx, :, channel_to_plot].cpu().numpy()
 
-                        # Get variable name from metadata
                         try:
                             var_name = self.metadata.names['u'][self.metadata.active_variables[channel_to_plot]]
                         except (IndexError, KeyError, TypeError):
                             var_name = f"Channel {channel_to_plot}"
                             print(f"Warning: Could not retrieve variable name for channel {channel_to_plot}. Using default.")
 
-
-                        # Call the PyVista plotting function
                         plot_3d_comparison_matplotlib(
                             coords=coords_np,
                             u_gtr=gtr_np,
                             u_prd=prd_np,
-                            save_path=self.path_config.result_path, # Use configured path
+                            save_path=self.path_config.result_path, 
                             variable_name=var_name,
                             point_size= 2.0,
-                            view_angle= (20, -120)
-                            # Optional: adjust point_size, cmap, dpi, view_angle here if needed
+                            view_angle= (25, -135)
                         )
                         first_batch_plotted = True
                     except Exception as plot_err:
                         print(f"Error during 3D plotting of first batch sample: {plot_err}")
 
-        all_relative_errors = torch.cat(all_relative_errors, dim=0)
-        final_metric = compute_final_metric(all_relative_errors)
-
         if self.setup_config.rank == 0:
-            self.config.datarow["relative error (direct)"] = final_metric
-            print(f"relative error: {final_metric}")
+            if not all_batch_metrics:
+                print("Warning: No metrics collected during testing.")
+                return
+
+            if metric_suite == "poseidon":
+                all_relative_errors_tensor = torch.cat(all_batch_metrics, dim=0)
+                final_metric = compute_final_metric(all_relative_errors_tensor)
+                self.config.datarow["relative error (direct)"] = final_metric
+                print(f"--- Final Metric (Poseidon Suite) ---")
+                print(f"Relative Error (Median): {final_metric:.6f}")
+
+            elif metric_suite == "general":
+                final_metrics_dict = aggregate_general_metrics(all_batch_metrics)
+                self.config.datarow["MSE (x10^-2)"] = final_metrics_dict['MSE']
+                self.config.datarow["MAE (x10^-1)"] = final_metrics_dict['MAE']
+                self.config.datarow["Max AE"] = final_metrics_dict['Max AE']
+                self.config.datarow["Rel L2 Error (%)"] = final_metrics_dict['Rel L2 Error (%)']
+                self.config.datarow["Rel L1 Error (%)"] = final_metrics_dict['Rel L1 Error (%)']
+            
+                print(f"--- Final Metrics (General Suite) ---")
+                print(f"MSE (x10^-2):       {final_metrics_dict['MSE']:.4f}")
+                print(f"MAE (x10^-1):       {final_metrics_dict['MAE']:.4f}")
+                print(f"Max AE:             {final_metrics_dict['Max AE']:.4f}")
+                print(f"Rel L2 Error (%):   {final_metrics_dict['Rel L2 Error (%)']:.4f}")
+                print(f"Rel L1 Error (%):   {final_metrics_dict['Rel L1 Error (%)']:.4f}")
+        # --- End Aggregation ---
+        elif self.setup_config.distributed:
+             # Handle non-rank 0 processes in distributed testing if necessary
+             pass
