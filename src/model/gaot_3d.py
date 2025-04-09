@@ -5,9 +5,10 @@ from typing import Optional
 from dataclasses import dataclass, field
 
 from .layers.attn import Transformer, TransformerConfig
-from .layers.magno import IntegralTransform, MAGNOConfig
+from .layers.magno import MAGNOConfig
 from .layers.magno import GNOEncoder, GNODecoder
-from .layers.utils.magno_utils import NeighborSearch
+
+from torch_geometric.data import Batch
 
 
 class GAOT3D(nn.Module):
@@ -72,13 +73,23 @@ class GAOT3D(nn.Module):
             gno_config=magno_config
         )
 
-    def encode(self, pndata: torch.Tensor, x_coord: torch.Tensor, token_coord: torch.Tensor, encoder_nbrs: list) -> torch.Tensor:
+    def encode(self, batch: Batch, token: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        batch: Batch
+            The input batch containing the data
+        token: Optional[torch.Tensor]
+            ND Tensor of shape [batch_size, n_token_nodes, n_dim]
+        Returns
+        ------- 
+        torch.Tensor
+            The regional node data of shape [..., n_regional_nodes, node_latent_size]
+        """
         # Apply GNO encoder
         encoded = self.encoder(
-            pndata = pndata,
-            x_coord= x_coord,
-            token_coord = token_coord,
-            encoder_nbrs = encoder_nbrs
+            batch = batch,
+            latent_tokens = token
         )
         return encoded
 
@@ -141,32 +152,42 @@ class GAOT3D(nn.Module):
 
         return rndata
 
-    def decode(self, rndata: torch.Tensor, x_coord: torch.Tensor, token_coord: torch.Tensor, decoder_nbrs: list) -> torch.Tensor:
-        # Apply GNO decoder
+    def decode(self, rndata: Optional[torch.Tensor] = None,
+                batch: Batch = None,
+                token: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        rndata: Optional[torch.Tensor]
+            ND Tensor of shape [..., n_regional_nodes, node_latent_size]
+        batch: Batch
+            The input batch containing the data
+        token: Optional[torch.Tensor]
+            ND Tensor of shape [batch_size, n_token_nodes, n_dim]
+        Returns
+        -------
+        torch.Tensor
+            The output tensor of shape [batch_size, n_physical_nodes, output_size]
+        """
         decoded = self.decoder(
-            rndata = rndata,
-            x_coord = x_coord,
-            token_coord = token_coord,
-            decoder_nbrs = decoder_nbrs)
+            batch = batch,
+            latent_tokens = token,
+            regional_nodes = rndata
+        )
         return decoded
 
     def forward(self,
-                pndata: Optional[torch.Tensor] = None,
-                xcoord: Optional[torch.Tensor] = None,
+                batch: Batch,
                 tokens: Optional[torch.Tensor] = None,
-                condition: Optional[float] = None,
-                encoder_nbrs: Optional[list] = None,
-                decoder_nbrs: Optional[list] = None
+                condition: Optional[float] = None
                 ) -> torch.Tensor:
         """
         Forward pass for GIVI model.
 
         Parameters
         ----------
-        pndata: Optional[torch.Tensor]
-            ND Tensor of shape [batch_size, n_physical_nodes, input_size]
-        xcoord: Optional[torch.Tensor]
-            ND Tensor of shape [batch_size, n_physical_nodes, n_dim]
+        batch: Batch
+            The input batch containing the data
         tokens: Optional[torch.Tensor]
             ND Tensor of shape [batch_size, n_token_nodes, n_dim]
         condition: Optional[float]
@@ -179,10 +200,8 @@ class GAOT3D(nn.Module):
         """
         # Encode: Map physical nodes to regional nodes using MAGNO Encoder
         rndata = self.encode(
-            pndata          =   pndata, 
-            x_coord         =   xcoord, 
-            token_coord     =   tokens,
-            encoder_nbrs    =   encoder_nbrs)
+            batch         =   batch, 
+            token         =   tokens)
 
         # Process: Apply Vision Transformer on the regional nodes
         rndata = self.process(
@@ -192,9 +211,8 @@ class GAOT3D(nn.Module):
         # Decode: Map regional nodes back to physical nodes using MAGNO Decoder
         output = self.decode(
             rndata      =   rndata, 
-            x_coord     =   xcoord,
-            token_coord =   tokens, 
-            decoder_nbrs=   decoder_nbrs)
+            batch       =   batch,
+            token       =   self.latent_tokens)
 
         return output
 
