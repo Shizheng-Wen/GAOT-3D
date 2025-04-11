@@ -3,10 +3,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import radius as pyg_radius # Import radius function
+from torch_geometric.utils import coalesce
+try:
+    from torch_cluster import knn
+    TORCH_CLUSTER_AVAILABLE = True
+except ImportError:
+    TORCH_CLUSTER_AVAILABLE = False
+    print("Warning: torch_cluster not found. KNN neighbor strategy will not work.")
+
 import torch_geometric as pyg
 
 from typing import Literal, Optional, Tuple
-
 from dataclasses import dataclass, replace, field
 from typing import Union, Tuple, Optional
 from .geoembed import GeometricEmbedding
@@ -18,30 +25,102 @@ from ...utils.scale import rescale
 ############
 @dataclass
 class MAGNOConfig:
+    # GNO parameters
+    use_gno: bool = True
     gno_coord_dim: int = 2
-    projection_channels: int = 256
-    in_gno_channel_mlp_hidden_layers: list = field(default_factory=lambda: [64, 64, 64])
-    out_gno_channel_mlp_hidden_layers: list = field(default_factory=lambda: [64, 64])
-    lifting_channels: int = 16
     gno_radius: float = 0.033
+    ## GNOEncoder
+    lifting_channels: int = 16   
+    in_gno_channel_mlp_hidden_layers: list = field(default_factory=lambda: [64, 64, 64])
+    in_gno_transform_type: str = 'linear'
+    ## GNODecoder
+    projection_channels: int = 256
+    out_gno_channel_mlp_hidden_layers: list = field(default_factory=lambda: [64, 64])
+    out_gno_transform_type: str = 'linear'
     # multiscale aggregation
     scales: list = field(default_factory=lambda: [1.0])
     use_scale_weights: bool = False
     use_graph_cache: bool = True
     gno_use_torch_cluster: bool = False
-    in_gno_transform_type: str = 'linear'
-    out_gno_transform_type: str = 'linear'
     gno_use_torch_scatter: str = True
     node_embedding: bool = False
     use_attn: Optional[bool] = None 
     attention_type: str = 'cosine'
+    # Geometric embedding
     use_geoembed: bool = False
     embedding_method: str = 'statistical'
-    pooling: str = 'max'
+    pooling: str = 'max' # pooling method for pointnet geoemb
     # Sampling
     sampling_strategy: Optional[str] = None
     max_neighbors: Optional[int] = None
     sample_ratio: Optional[float] = None
+    # neighbor finding strategy
+    neighbor_strategy: str = 'radius'       # ["radius", "knn", "bidirectional"]
+
+
+############
+# Utils Functions
+############
+def get_neighbor_strategy(
+    neighbor_strategy: str,
+    phys_pos: torch.Tensor,
+    batch_idx_phys: torch.Tensor,
+    latent_tokens_pos: torch.Tensor,
+    batch_idx_latent: torch.Tensor,
+    radius: float):
+    """
+    Get the neighbor strategy based on the provided string.
+    Args:
+        neighbor_strategy (str): The neighbor strategy to use.
+        phys_pos (Tensor): Physical positions.
+        batch_idx_phys (Tensor): Batch indices for physical positions.
+        latent_tokens_pos (Tensor): Latent token positions.
+        batch_idx_latent (Tensor): Batch indices for latent token positions.
+        radius (float): Radius for neighbor finding.
+    Returns:
+        edge_index (Tensor): Edge index for the neighbors.
+    """
+    device = phys_pos.device
+    edge_index_fwd, edge_index_rev_swapped = None, None
+
+    if neighbor_strategy in ['radius', 'bidirectional']:
+        edge_index_fwd = pyg_radius(
+            x=phys_pos,               # Source = physical
+            y=latent_tokens_pos,      # Query = latent
+            r=radius,
+            batch_x=batch_idx_phys,
+            batch_y=batch_idx_latent,
+            max_num_neighbors=1000 
+        )
+    
+    if neighbor_strategy in ['knn', 'bidirectional']:
+        # For each physical point (y), find nearest latent token (x)
+        edge_index_rev = knn(
+            x=latent_tokens_pos,      # Data points to search within (latent)
+            y=phys_pos,               # Query points (physical)
+            k=1,
+            batch_x=batch_idx_latent, # Batch index for data points
+            batch_y=batch_idx_phys    # Batch index for query points
+        ) # Returns [2, TotalPhysicalNodes] where row 0=phys_idx, row 1=latent_idx
+
+        # Swap the order of the edge_index to match the forward direction
+        edge_index_rev_swapped = edge_index_rev.flip(0) # Swap the order of the edges
+        # edge_index_rev_swapped = edge_index_rev[[1, 0], :]
+
+    # --- Combine the edge indices based on the strategy ---
+    if neighbor_strategy == 'radius':
+        return edge_index_fwd if edge_index_fwd is not None else torch.empty((2,0), dtype=torch.long, device=device)
+    elif neighbor_strategy == 'knn':
+        return edge_index_rev_swapped if edge_index_rev_swapped is not None else torch.empty((2,0), dtype=torch.long, device=device)
+    elif neighbor_strategy == 'bidirectional':
+        if edge_index_fwd is None: edge_index_fwd = torch.empty((2,0), dtype=torch.long, device=device)
+        if edge_index_rev_swapped is None: edge_index_rev_swapped = torch.empty((2,0), dtype=torch.long, device=device)
+        combined = torch.cat([edge_index_fwd, edge_index_rev_swapped], dim=1)
+        # Coalesce removes duplicates and sorts
+        return coalesce(combined)
+    else:
+            raise ValueError(f"Unknown neighbor strategy: {neighbor_strategy}")
+
 
 ############
 # MAGNOEncoder
@@ -54,34 +133,46 @@ class GNOEncoder(nn.Module):
         self.lifting_channels = gno_config.lifting_channels
         self.coord_dim = gno_config.gno_coord_dim
 
-        # --- Calculate MLP input dimension ---
-        in_kernel_in_dim = self.coord_dim * 2 
-        if gno_config.in_gno_transform_type in ["nonlinear", "nonlinear_kernelonly"]:
-             in_kernel_in_dim += in_channels 
-
+        # --- Store Neighbor Finding Strategy ---
+        self.neighbor_strategy = gno_config.neighbor_strategy
+        if self.neighbor_strategy in ['knn', 'bidirectional'] and not TORCH_CLUSTER_AVAILABLE:
+            raise ImportError(f"torch_cluster is required for neighbor_strategy='{self.neighbor_strategy}'")
         # --- Init GNO Layer ---
-        in_gno_channel_mlp_hidden_layers = gno_config.in_gno_channel_mlp_hidden_layers.copy()
-        in_gno_channel_mlp_hidden_layers.insert(0, in_kernel_in_dim)
-        in_gno_channel_mlp_hidden_layers.append(self.lifting_channels) # Kernel MLP output dim
 
-        self.gno = IntegralTransform(
-            channel_mlp_layers=in_gno_channel_mlp_hidden_layers,
-            transform_type=gno_config.in_gno_transform_type,
-            # use_torch_scatter determined globally now
-            use_attn=gno_config.use_attn,
-            coord_dim=self.coord_dim, # Pass coord_dim if attn used
-            attention_type=gno_config.attention_type,
-            sampling_strategy=gno_config.sampling_strategy,
-            max_neighbors=gno_config.max_neighbors,
-            sample_ratio=gno_config.sample_ratio
-        )
+        ## --- Calculate MLP input dimension ---
+        self.use_gno = gno_config.use_gno
+        if self.use_gno:
+            in_kernel_in_dim = self.coord_dim * 2 
+            if gno_config.in_gno_transform_type in ["nonlinear", "nonlinear_kernelonly"]:
+                in_kernel_in_dim += in_channels 
+        
+            in_gno_channel_mlp_hidden_layers = gno_config.in_gno_channel_mlp_hidden_layers.copy()
+            in_gno_channel_mlp_hidden_layers.insert(0, in_kernel_in_dim)
+            in_gno_channel_mlp_hidden_layers.append(self.lifting_channels) # Kernel MLP output dim
 
-        # --- Init Lifting MLP ---
-        self.lifting = ChannelMLP(
-            in_channels=in_channels,
-            out_channels=self.lifting_channels, # Output matches GNO kernel output
-            n_layers=1
-        )
+            self.gno = IntegralTransform(
+                channel_mlp_layers=in_gno_channel_mlp_hidden_layers,
+                transform_type=gno_config.in_gno_transform_type,
+                # use_torch_scatter determined globally now
+                use_attn=gno_config.use_attn,
+                coord_dim=self.coord_dim, # Pass coord_dim if attn used
+                attention_type=gno_config.attention_type,
+                sampling_strategy=gno_config.sampling_strategy,
+                max_neighbors=gno_config.max_neighbors,
+                sample_ratio=gno_config.sample_ratio
+            )
+
+            ## --- Init Lifting MLP ---
+            self.lifting = ChannelMLP(
+                in_channels=in_channels,
+                out_channels=self.lifting_channels, # Output matches GNO kernel output
+                n_layers=1
+            )
+        else:
+            self.gno = None
+            self.lifting = None
+            if in_channels > 0: 
+                print("Warning: GNOEncoder has input_channels > 0 but use_gno=False. Input features (batch.x) will be ignored by the encoder path.")
 
         # --- Init GeoEmbed （optional) ---
         self.use_geoembed = gno_config.use_geoembed
@@ -108,7 +199,6 @@ class GNOEncoder(nn.Module):
             )
             self.scale_weight_activation = nn.Softmax(dim=-1)
 
-
     def forward(
         self, 
         batch: 'pyg.data.Batch', 
@@ -128,54 +218,60 @@ class GNOEncoder(nn.Module):
         num_graphs = batch.num_graphs
         num_latent_tokens_per_graph = latent_tokens_pos.shape[0] // num_graphs # Calculate M
 
-        # --- Lifting ---
-        # Apply lifting to physical features
-        # ChannelMLP expects [B, C, N] or [C, N*B], using latter
-        phys_feat_lifted = self.lifting(phys_feat.transpose(0, 1)).transpose(0, 1) # [TotalNodes_phys, C_lifted]
+
 
         # --- Multi-Scale GNO encoding ---
         encoded_scales = []
         for scale in self.scales:
             scaled_radius = self.gno_radius * scale
             # Dynamic Bipartite Neighbor Search: physical (data) -> latent (query)
-            edge_index = pyg_radius(
-                x=phys_pos,           # Data points (source)
-                y=latent_tokens_pos, # Query points (destination)
-                r=scaled_radius,
-                batch_x=batch_idx_phys,  # Batch indices for phys_pos
-                batch_y=latent_tokens_batch_idx, # Batch indices for latent_tokens_batched
-                #max_num_neighbors=int(num_latent_tokens*phys_pos.shape[0]*0.2) # Heuristic limit, adjust
-            ) # Returns edge_index [2, NumEdges] where edge_index[0] indexes latent, edge_index[1] indexes physical
+            edge_index = get_neighbor_strategy(
+                neighbor_strategy = self.neighbor_strategy,
+                phys_pos = phys_pos,               # Source = physical
+                batch_idx_phys = batch_idx_phys,        # Batch indices for physical
+                latent_tokens_pos = latent_tokens_pos,      # Query = latent
+                batch_idx_latent = latent_tokens_batch_idx, # Batch indices for latent
+                radius = scaled_radius
+            )
 
-            # GNO Layer Call
-            encoded_unpatched = self.gno(
-                y_pos=phys_pos,           # Source coords (physical)
-                x_pos=latent_tokens_pos, # Query coords (latent)
-                edge_index=edge_index,      # Computed neighbors
-                f_y=phys_feat_lifted,     # Source features (lifted physical)
-                batch_y=batch_idx_phys,   # Pass batch indices if needed by GNO internals (e.g., batch norm)
-                batch_x=latent_tokens_batch_idx
-            ) # Output shape: [TotalNodes_latent, C_lifted]
+            # --- Conditional GNO Path ---
+            if self.use_gno:
+                ## --- Lifting MLP ---
+                ## ChannelMLP expects [B, C, N] or [C, N*B], using latter
+                phys_feat_lifted = self.lifting(phys_feat.transpose(0, 1)).transpose(0, 1) # [TotalNodes_phys, C_lifted]
 
-            # --- GeoEmbed (Optional) ---
+                encoded_gno = self.gno(
+                    y_pos=phys_pos,           # Source coords (physical)
+                    x_pos=latent_tokens_pos, # Query coords (latent)
+                    edge_index=edge_index,      # Computed neighbors
+                    f_y=phys_feat_lifted,     # Source features (lifted physical)
+                    batch_y=batch_idx_phys,   # Pass batch indices if needed by GNO internals (e.g., batch norm)
+                    batch_x=latent_tokens_batch_idx
+                ) # Output shape: [TotalNodes_latent, C_lifted]
+            else:
+                encoded_gno = None
+            # --- Conditional GeoEmbed Path ---
             if self.use_geoembed:
-                # Geoembed needs careful adaptation for bipartite edge_index
-                # Pass relevant info: phys_pos, latent_tokens_batched, edge_index, batch info?
-                # Assuming geoembed internal logic is updated or doesn't need edge_index directly
-                # Placeholder: Pass coordinates and let geoembed handle indexing/aggregation
-                geoembedding = self.geoembed(
+                geo_embedding = self.geoembed(
                     phys_pos,             # Input geometry (physical)
                     latent_tokens_pos, # Query points (latent)
                     edge_index,           # Pass edge_index if needed by implementation
                     batch_idx_phys,       # Pass batch info if needed
                     latent_tokens_batch_idx
                 ) # Output shape: [TotalNodes_latent, C_lifted]
-
-                combined = torch.cat([encoded_unpatched, geoembedding], dim=-1)
-                # Recovery MLP expects [N, C] -> Use Linear instead of ChannelMLP? Or transpose?
-                # Using LinearChannelMLP adapted for node features:
+            else:
+                geo_embedding = None
+            
+            # --- Combine GNO and GeoEmbed ---
+            if self.use_gno and self.use_geoembed:
+                combined = torch.cat([encoded_gno, geo_embedding], dim=-1)
                 encoded_unpatched = self.recovery(combined.permute(1,0)).permute(1,0) # Apply recovery MLP
-
+            elif self.use_gno:
+                encoded_unpatched = encoded_gno
+            elif self.use_geoembed:
+                encoded_unpatched = geo_embedding
+            else:
+                raise ValueError("GNO and GeoEmbed are both disabled. No encoding will be performed.")
 
             encoded_scales.append(encoded_unpatched) # List of [TotalNodes_latent, C_lifted]
 
@@ -186,7 +282,7 @@ class GNOEncoder(nn.Module):
              encoded_stack = torch.stack(encoded_scales, dim=0) # [num_scales, TotalNodes_latent, C_lifted]
              if self.use_scale_weights:
                   # Weights depend on latent token positions (apply per node)
-                  scale_w = self.scale_weighting(latent_tokens_batched) # [TotalNodes_latent, num_scales]
+                  scale_w = self.scale_weighting(latent_tokens_pos) # [TotalNodes_latent, num_scales]
                   scale_w = self.scale_weight_activation(scale_w)       # [TotalNodes_latent, num_scales]
                   # Reshape weights for broadcasting: [num_scales, TotalNodes_latent, 1]
                   weights_reshaped = scale_w.permute(1, 0).unsqueeze(-1)
@@ -213,7 +309,15 @@ class GNODecoder(nn.Module):
         self.scales = gno_config.scales
         self.coord_dim = gno_config.gno_coord_dim
         self.in_channels = in_channels 
-        self.out_channels = out_channels 
+        self.out_channels = out_channels
+        self.use_geoembed = gno_config.use_geoembed 
+        self.use_scale_weights = gno_config.use_scale_weights
+
+        # --- Store Neighbor Strategy ---
+        self.neighbor_strategy = gno_config.gno_neighbor_strategy
+        if self.neighbor_strategy in ['knn', 'bidirectional'] and not TORCH_CLUSTER_AVAILABLE:
+            raise ImportError(f"torch_cluster is required for neighbor_strategy='{self.neighbor_strategy}'")
+        # ---
 
         # --- Calculate MLP input dimension ---
         out_kernel_in_dim = self.coord_dim * 2 
@@ -247,7 +351,6 @@ class GNODecoder(nn.Module):
         )
 
         # --- Init GeoEmbed (Optional) ---
-        self.use_geoembed = gno_config.use_geoembed
         if self.use_geoembed:
              # Geoembed input dim = coord_dim, output dim = in_channels (to match GNO output)
             self.geoembed = GeometricEmbedding(
@@ -264,7 +367,6 @@ class GNODecoder(nn.Module):
 
 
         # --- Init Scale Weighting (Optional) ---
-        self.use_scale_weights = gno_config.use_scale_weights
         if self.use_scale_weights:
              # Weighting based on physical query positions
             self.num_scales = len(self.scales)
@@ -272,7 +374,6 @@ class GNODecoder(nn.Module):
                 nn.Linear(self.coord_dim, 16), nn.ReLU(), nn.Linear(16, self.num_scales)
             )
             self.scale_weight_activation = nn.Softmax(dim=-1)
-
 
     def forward(self,
                 rndata_flat: torch.Tensor,        # Flattened latent features [TotalLatent, C_in]
@@ -297,13 +398,14 @@ class GNODecoder(nn.Module):
             scaled_radius = self.gno_radius * scale
             # Dynamic Bipartite Neighbor Search: latent (data) -> physical (query)
             
-            edge_index = pyg_radius(
-                x=latent_tokens_pos, # Data points (source) = latent
-                y=phys_pos_query,              # Query points (destination) = physical
-                r=scaled_radius,
-                batch_x=latent_tokens_batch_idx, # Batch indices for latent
-                batch_y=batch_idx_phys_query,   # Batch indices for physical
-            ) # edge_index[0] indexes physical, edge_index[1] indexes latent
+            edge_index = get_neighbor_strategy(
+                neighbor_strategy = self.neighbor_strategy,
+                phys_pos = latent_tokens_pos,             # Source = latent
+                batch_idx_phys = latent_tokens_batch_idx, # Batch indices for latent
+                latent_tokens_pos = phys_pos_query,       # Query = physical
+                batch_idx_latent = batch_idx_phys_query,  # Batch indices for physical
+                radius = scaled_radius
+            )
             
             # GNO Layer Call
             decoded_unpatched = self.gno(
