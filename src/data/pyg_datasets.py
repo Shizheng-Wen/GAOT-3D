@@ -37,6 +37,11 @@ class VTKMeshDataset(Dataset):
         return [] # Or return list based on order_file if process() needs it
 
     @property
+    def processed_dir(self) -> str:
+        """Returns the path to the directory containing processed pyg files."""
+        return os.path.join(self.root, 'processed_pyg')
+        
+    @property
     def processed_file_names(self):
         # Check if processed files exist based on order_file
         # This is used by PyG to check if processing is needed

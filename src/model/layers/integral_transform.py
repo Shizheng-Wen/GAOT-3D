@@ -1,4 +1,4 @@
-# src/model/layers/magno.py
+# src/model/layers/integral_transform.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,76 +9,24 @@ from .mlp import LinearChannelMLP
 
 from torch_geometric.utils import dropout_edge
 
-# Use torch_scatter directly if installed and needed
+# --- torch_scatter check ---
 try:
     import torch_scatter
-    if hasattr(torch_scatter, 'segment_csr'):
-         from torch_scatter import segment_csr as scatter_segment_csr
-         HAS_SCATTER = True
-    # Check for scatter_reduce or equivalent needed for softmax/aggregation
-    elif hasattr(torch_scatter, 'scatter'):
-         from torch_scatter import scatter
-         HAS_SCATTER = True # Use scatter for sum, mean, max
+    # Check specifically for the 'scatter' function
+    if hasattr(torch_scatter, 'scatter'):
+        scatter = torch_scatter.scatter
+        HAS_TORCH_SCATTER = True
+        print("Using torch_scatter.scatter for aggregation.")
     else:
-        HAS_SCATTER = False
+        HAS_TORCH_SCATTER = False
 except ImportError:
-    HAS_SCATTER = False
+    HAS_TORCH_SCATTER = False
 
-# Keep LinearChannelMLP (or import if moved)
+if not HAS_TORCH_SCATTER:
+    print("Warning: torch_scatter.scatter not found. Using native PyTorch fallbacks (potentially slower).")
 
-# --- Native PyTorch segment_csr (Fallback if torch_scatter unavailable) ---
-# This implementation needs careful adjustment for edge_index format
-def segment_sum_native(src, index, dim_size):
-     # Naive implementation, can be slow
-     out = torch.zeros((dim_size,) + src.shape[1:], dtype=src.dtype, device=src.device)
-     out.scatter_add_(0, index.unsqueeze(-1).expand_as(src), src)
-     return out
-
-def segment_mean_native(src, index, dim_size):
-     # Naive implementation
-     out_sum = segment_sum_native(src, index, dim_size)
-     counts = torch.bincount(index, minlength=dim_size).unsqueeze(-1).clamp(min=1)
-     return out_sum / counts
-
-def segment_max_native(src, index, dim_size):
-     # Naive implementation
-     out = torch.full((dim_size,) + src.shape[1:], float('-inf'), dtype=src.dtype, device=src.device)
-     # Use scatter with reduce='max' - requires PyTorch 1.12+ I believe
-     # Fallback is harder, maybe loop? For now, assume scatter_reduce='max' works if scatter exists.
-     if hasattr(torch, 'scatter_reduce_'):
-         # Use the built-in scatter_reduce_ if available
-         # Note the index needs expansion to match src dims for scatter_reduce_
-         expanded_index = index.unsqueeze(-1).expand_as(src)
-         out.scatter_reduce_(0, expanded_index, src, reduce="amax", include_self=False)
-         out = torch.where(out == float('-inf'), 0.0, out) # Replace -inf with 0 if no neighbors
-         return out
-     else: # Very basic fallback if no scatter_reduce
-          print("Warning: segment_max_native requires PyTorch 1.12+ or torch_scatter. Max values might be incorrect.")
-          # Approximate with sum for now, or implement loop
-          return segment_sum_native(src, index, dim_size)
-
-
-# --- Choose scatter implementation ---
-if HAS_SCATTER and hasattr(torch_scatter, 'scatter'):
-     print("Using torch_scatter.scatter for aggregation.")
-     scatter_sum = lambda src, index, dim_size: scatter(src, index, dim=0, dim_size=dim_size, reduce='sum')
-     scatter_mean = lambda src, index, dim_size: scatter(src, index, dim=0, dim_size=dim_size, reduce='mean')
-     scatter_max = lambda src, index, dim_size: scatter(src, index, dim=0, dim_size=dim_size, reduce='max')[0] # scatter_max returns values and argmax
-elif HAS_SCATTER and hasattr(torch_scatter, 'segment_csr'):
-     # segment_csr is less flexible (needs CSR format), prefer scatter if available
-     print("Using torch_scatter.segment_csr for aggregation (less flexible).")
-     # Need wrapper functions to adapt edge_index to CSR or use native below
-     # For now, fall back to native if only segment_csr is found but scatter isn't
-     print("Warning: torch_scatter.segment_csr found but not torch_scatter.scatter. Falling back to native PyTorch aggregation.")
-     scatter_sum = segment_sum_native
-     scatter_mean = segment_mean_native
-     scatter_max = segment_max_native
-else:
-    print("Warning: torch_scatter not found or suitable functions missing. Using native PyTorch aggregation (potentially slow).")
-    scatter_sum = segment_sum_native
-    scatter_mean = segment_mean_native
-    scatter_max = segment_max_native
-# -----
+    from .utils.scatter_native import scatter_native
+    scatter = scatter_native 
 
 class IntegralTransform(nn.Module):
     def __init__(
@@ -185,19 +133,18 @@ class IntegralTransform(nn.Module):
 
     def _segment_softmax_pyg(self, scores: torch.Tensor, index: torch.Tensor, dim_size: int) -> torch.Tensor:
         """Applies softmax per segment based on index using torch_scatter."""
-        scores_max = scatter_max(scores, index, dim=0, dim_size=dim_size)
-        # Ensure scores_max is broadcastable back
+        scores_max = scatter(scores, index, dim=0, dim_size=dim_size, reduce="max")
         scores_max_expanded = scores_max[index]
         scores = scores - scores_max_expanded # Stable softmax
         exp_scores = torch.exp(scores)
-        exp_sum = scatter_sum(exp_scores, index, dim=0, dim_size=dim_size)
-        # Clamp sum to avoid division by zero
-        exp_sum_clamped = torch.clamp(exp_sum, min=torch.finfo(exp_sum.dtype).tiny)
+        exp_sum = scatter(exp_scores, index, dim=0, dim_size=dim_size, reduce="sum")
+        exp_sum_clamped = torch.clamp(exp_sum, min=torch.finfo(exp_sum.dtype).tiny) # Clamp sum to avoid division by zero
         exp_sum_expanded = exp_sum_clamped[index]
         attention_weights = exp_scores / exp_sum_expanded
         return attention_weights
     
-    def forward(self, y_pos: torch.Tensor, 
+    def forward(self, 
+                y_pos: torch.Tensor, 
                 x_pos: torch.Tensor, 
                 edge_index: torch.Tensor, 
                 f_y: Optional[torch.Tensor] = None, 
@@ -229,7 +176,7 @@ class IntegralTransform(nn.Module):
         num_sampled_edges = sampled_edge_index.shape[1]
         if num_sampled_edges == 0:
             # Handle no neighbors
-            output_channels = self.channel_mlp.fcs[-1].out_channels
+            output_channels = self.channel_mlp.fcs[-1].out_features
             output_shape = [num_query_nodes, output_channels] # Non-batched shape
             if batch_x is not None and f_y is not None and f_y.ndim == 3: # Check if input was batched
                  # This case is ambiguous - if f_y was [B, N, C], output should be?
@@ -282,36 +229,24 @@ class IntegralTransform(nn.Module):
         rep_features_transformed = self.channel_mlp(agg_features) # [NumSampledEdges, C_mlp_out]
 
         if in_features is not None and self.transform_type != "nonlinear_kernelonly":
-             rep_features_transformed = rep_features_transformed * in_features
+            rep_features_transformed = rep_features_transformed * in_features
 
         if attention_weights is not None:
-             rep_features_transformed = rep_features_transformed * attention_weights.unsqueeze(-1)
+            rep_features_transformed = rep_features_transformed * attention_weights.unsqueeze(-1)
 
         # Apply edge weights if provided (e.g., distances, kernel values not from MLP)
         reduction = "sum" if (self.use_attn and attention_weights is not None) else "mean"
-        if weights is not None:
-             # Assume weights correspond to the *original* edges, need to index them
-             # This requires weights to be passed if sampling is ratio-based
-             # If sampling is max_neighbor, how to get weights?
-             # Let's assume weights are edge features computed *after* sampling if needed,
-             # or simply not used with this sampling structure for now.
-             # If weights are per-edge attributes in PyG Data, index them: weights[sampled_edge_indices?]
-             # For simplicity, ignoring external weights when sampling for now.
-             # If volume weights per *source node* 'y' were intended, index them: vol_weights[source_idx]
-             # vol_weights_y = weights[source_idx]
-             # rep_features_transformed = vol_weights_y.unsqueeze(-1) * rep_features_transformed
-             # reduction = "sum" # Usually sum if volume weights are used
-             pass # Ignoring external weights for now when sampling
-
-
-        # === Final Aggregation using torch_scatter ===
-        # Aggregate features based on the query node index
-        if reduction == 'mean':
-             out_features = scatter_mean(rep_features_transformed, query_idx, dim=0, dim_size=num_query_nodes)
-        elif reduction == 'sum':
-             out_features = scatter_sum(rep_features_transformed, query_idx, dim=0, dim_size=num_query_nodes)
-        else: # E.g., max
-             out_features = scatter_max(rep_features_transformed, query_idx, dim=0, dim_size=num_query_nodes)
+        
+        out_features = scatter(
+            src=rep_features_transformed,
+            index=query_idx,
+            dim=0,                   # Aggregate along the edge dimension
+            dim_size=num_query_nodes,# Output size is number of query nodes
+            reduce=reduction
+        )
+        # Handle 'max'/'min' return tuple if using torch_scatter.scatter
+        if HAS_TORCH_SCATTER and (reduction == "max" or reduction=="min"):
+             out_features = out_features[0] # Keep only the values, discard argmax/argmin
 
         return out_features
 

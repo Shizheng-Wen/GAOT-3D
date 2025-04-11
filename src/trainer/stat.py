@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.loader import DataLoader as PyGDataLoader 
 from torch_geometric.data import Data 
+from torch_geometric.transforms import Compose
 import torch_geometric as pyg
 
 import xarray as xr
@@ -20,7 +21,9 @@ from .utils.data_pairs import CustomDataset
 
 from src.data.dataset import Metadata, DATASET_METADATA
 from src.data.pyg_datasets import VTKMeshDataset
+from src.data.pyg_transforms import RescalePosition, NormalizeFeatures
 from src.model import init_model
+from tqdm import tqdm
 from src.model.layers.utils.magno_utils import NeighborSearch
 
 from src.utils.scale import rescale
@@ -47,12 +50,62 @@ class StaticTrainer3D(TrainerBase):
 
     def __init__(self, args):
         super().__init__(args)
+
+    def _calculate_or_load_stats(self, dataset_config, order_file_path, data_root):
+        """Calculates or loads normalization statistics."""
+        stats_file = os.path.join(data_root, f"{dataset_config.name}_norm_stats.pt")
+
+        if os.path.exists(stats_file) and not getattr(dataset_config, 'force_recompute_stats', False):
+            print(f"Loading pre-calculated normalization stats from {stats_file}")
+            stats = torch.load(stats_file)
+            self.u_mean = stats['mean'].to(self.dtype)
+            self.u_std = stats['std'].to(self.dtype)
+        else:
+            print("Calculating normalization statistics from training set...")
+            # Need to instantiate a temporary dataset for the training split *without* normalization
+            # to iterate and compute stats.
+            temp_train_dataset = VTKMeshDataset(
+                root=dataset_config.base_path,
+                order_file=order_file_path,
+                dataset_config=dataset_config,
+                split='train',
+                transform=RescalePosition() # Apply rescaling even when calculating stats
+            )
+            # Use a simple loader to iterate
+            temp_loader = PyGDataLoader(temp_train_dataset, batch_size=dataset_config.batch_size, shuffle=False, num_workers=4) # Use 0 workers for simplicity here
+
+            all_x = []
+            for batch in tqdm(temp_loader, desc="Calculating Stats"):
+                # Collect all 'x' features from the training set
+                # Be mindful of memory for large datasets!
+                all_x.append(batch.x.cpu()) # Move to CPU to avoid GPU memory buildup
+
+            if not all_x:
+                 raise ValueError("No data found in training set to calculate statistics.")
+
+            full_x_tensor = torch.cat(all_x, dim=0)
+            # Calculate mean/std over all nodes/samples in training set (dimension 0)
+            # Assuming features are [TotalNodes, NumFeatures]
+            
+            self.u_mean = torch.mean(full_x_tensor, dim=0, dtype=self.dtype)
+            self.u_std = torch.std(full_x_tensor, dim=0).to(self.dtype)
+
+            print(f"Calculated - Mean: {self.u_mean}, Std: {self.u_std}")
+            # Save calculated stats
+            print(f"Saving normalization stats to {stats_file}")
+            os.makedirs(os.path.dirname(stats_file), exist_ok=True)
+            torch.save({'mean': self.u_mean, 'std': self.u_std}, stats_file)
+        # Ensure stats are available and have correct type
+        if self.u_mean is None or self.u_std is None:
+             raise RuntimeError("Normalization mean/std could not be calculated or loaded.")
+        self.u_mean = self.u_mean.to(self.dtype)
+        self.u_std = self.u_std.to(self.dtype)
    
     def init_dataset(self, dataset_config):
         print("Initializing PyG dataset ...")  
         self.latent_token_size = self.model_config.args.latent_tokens
         data_root = dataset_config.base_path
-        order_file_path = os.path.join(data_root, "order.txt")
+        order_file_path = os.path.join(data_root, "order_use.txt")
         processed_data_path = os.path.join(data_root, "processed_pyg")
 
         if not os.path.exists(processed_data_path):
@@ -60,12 +113,13 @@ class StaticTrainer3D(TrainerBase):
         if not os.path.exists(order_file_path):
             raise FileNotFoundError(f"Order file does not exist: {order_file_path}")
         
-        base_path = dataset_config.base_path
-        dataset_name = dataset_config.name
-        dataset_path = os.path.join(base_path, f"{dataset_name}.nc")
-        # TODO: calculate the self.u_mean and self.u_std from the dataset
-        self.u_mean = torch.tensor([0.0], dtype=self.dtype)
-        self.u_std = torch.tensor([1.0], dtype=self.dtype)
+        # --- Calculate or Load Normalization Stats ---
+        self._calculate_or_load_stats(dataset_config, order_file_path, data_root)
+
+        # --- Define Transforms ---
+        rescale_transform = RescalePosition(lims=(-1., 1.))
+        normalize_transform = NormalizeFeatures(mean=self.u_mean, std=self.u_std)
+        composed_transform = Compose([rescale_transform, normalize_transform])
 
         if self.setup_config.train:
             print("Loading training dataset ...")
@@ -73,26 +127,29 @@ class StaticTrainer3D(TrainerBase):
                 root = data_root,
                 order_file = order_file_path,
                 dataset_config = dataset_config,
-                split="train"
+                split="train",
+                transform = composed_transform
             )
             print("Loading validation dataset ...")
             val_ds = VTKMeshDataset(
                 root = data_root,
                 order_file = order_file_path,
                 dataset_config = dataset_config,
-                split="val"
+                split="val",
+                transform = composed_transform
             )
         print("Loading testing dataset ...")
         test_ds = VTKMeshDataset(
             root = data_root,
             order_file = order_file_path,
             dataset_config = dataset_config,
-            split="test"
+            split="test",
+            transform = composed_transform
         )
 
         self.num_input_channels = 3
         self.num_output_channels = 1
-
+        
         if self.setup_config.train:
             self.train_loader = PyGDataLoader(
                 train_ds,
@@ -130,19 +187,36 @@ class StaticTrainer3D(TrainerBase):
         )
         latent_queries = torch.stack(meshgrid, dim = -1).reshape(-1, 3)
         self.latent_tokens = rescale(latent_queries, (-1, 1))
-
         print("Dataset initialization with PyG finished.")
 
+    def init_model(self, model_config):
+        self.model = init_model(
+            input_size=self.num_input_channels, 
+            output_size=self.num_output_channels, 
+            model=model_config.name,
+            config=model_config.args
+            )
+        breakpoint()
+        self.model.to(self.device)
+        
+        if self.setup_config.distributed:
+            self.model = torch.nn.parallel.DistributedDataParallel(
+                self.model,
+                device_ids=[self.setup_config.local_rank],
+                output_device=self.setup_config.local_rank
+            )
         
     def train_step(self, batch: "pyg.data.Batch") -> torch.Tensor:
         batch = batch.to(self.device)
         latent_tokens_dev = self.latent_tokens.to(self.device)
+
         pred = self.model(
-            batch,
-            latent_tokens_dev
+            batch = batch,
+            tokens_pos = latent_tokens_dev
         )
-        target = batch.pressure
-        target = target.squeeze(1)
+
+        target = batch.x
+        target = target
         return self.loss_fn(pred, target)
 
     def validate(self, loader: PyGDataLoader):
@@ -152,13 +226,12 @@ class StaticTrainer3D(TrainerBase):
             for batch in loader:
                 batch = batch.to(self.device)
                 latent_tokens_dev = self.latent_tokens.to(self.device)
-
                 pred = self.model(
-                    batch,
-                    latent_tokens_dev
+                    batch = batch,
+                    tokens_pos = latent_tokens_dev
                 )
-                target = batch.pressure
-                target = target.squeeze(1)
+                target = batch.x
+                target = target
 
                 loss = self.loss_fn(pred, target)
                 total_loss += loss.item()
@@ -185,7 +258,7 @@ class StaticTrainer3D(TrainerBase):
                     batch,
                     latent_tokens_dev
                 )
-                target_norm = batch.pressure
+                target_norm = batch.x
 
                 u_std_dev = self.u_std.to(self.device)
                 u_mean_dev = self.u_mean.to(self.device)

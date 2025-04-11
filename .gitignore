@@ -19,6 +19,7 @@ slurmjob/**
 # !config/tpl/**
 # #!config/gaot/
 
+tests/
 
 tests/preprocess/*
 tests/postprocess/*

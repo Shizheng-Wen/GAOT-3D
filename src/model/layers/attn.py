@@ -20,7 +20,7 @@ class AttentionConfig:
     use_conditional_norm:bool = False
     cond_norm_hidden_size:int = 4
     atten_dropout:float = 0.1
-    positional_embedding: str = 'absolute'
+    positional_embedding: str = 'absolute'       # Don't need to designate, it will follow the values in the TransformerConfig
     H: Optional[int] = None  # Add H with a default value
     W: Optional[int] = None  # Add W with a default value
 
@@ -33,7 +33,7 @@ class FFNConfig:
 @dataclass
 class TransformerConfig:
     patch_size: int = 8
-    hidden_size:int = 256
+    hidden_size:int = 256                                       # needs to be aligned with values in the Attentionconfig.hidden_size
     use_attn_norm: bool = True
     use_ffn_norm: bool = True
     norm_eps: float = 1e-6
@@ -83,7 +83,6 @@ class GroupQueryFlashAttention(nn.Module):
             self.correction = ConditionedNorm(1, output_size,cond_norm_hidden_size)
         else:
             self.correction = None
-            
         self.attn_dtype = torch.float16  # or torch.bfloat16
         if positional_embedding == "rope":
             self.rotary_emb = RotaryEmbedding(dim=self.head_dim)
