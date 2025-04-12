@@ -233,7 +233,6 @@ class GNOEncoder(nn.Module):
                 batch_idx_latent = latent_tokens_batch_idx, # Batch indices for latent
                 radius = scaled_radius
             )
-
             # --- Conditional GNO Path ---
             if self.use_gno:
                 ## --- Lifting MLP ---
@@ -314,7 +313,7 @@ class GNODecoder(nn.Module):
         self.use_scale_weights = gno_config.use_scale_weights
 
         # --- Store Neighbor Strategy ---
-        self.neighbor_strategy = gno_config.gno_neighbor_strategy
+        self.neighbor_strategy = gno_config.neighbor_strategy
         if self.neighbor_strategy in ['knn', 'bidirectional'] and not TORCH_CLUSTER_AVAILABLE:
             raise ImportError(f"torch_cluster is required for neighbor_strategy='{self.neighbor_strategy}'")
         # ---
@@ -406,7 +405,7 @@ class GNODecoder(nn.Module):
                 batch_idx_latent = batch_idx_phys_query,  # Batch indices for physical
                 radius = scaled_radius
             )
-            
+
             # GNO Layer Call
             decoded_unpatched = self.gno(
                 y_pos=latent_tokens_pos,     # Source coords (latent)

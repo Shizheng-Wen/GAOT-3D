@@ -18,6 +18,7 @@
             "latent_tokens": [32,32,32],
             "magno": {
                 "gno_coord_dim": 3,
+                "neighbor_strategy": "radius",
                 "projection_channels": 256,
                 "in_gno_channel_mlp_hidden_layers": [64,64,64],
                 "out_gno_channel_mlp_hidden_layers": [64,64],
@@ -29,7 +30,7 @@
                 "embedding_method": "statistical"
             },
             "transformer": {
-                "patch_size": 8,
+                "patch_size": 4,
                 "hidden_size": 256,
                 "use_attn_norm": true,
                 "use_ffn_norm": true,
@@ -57,10 +58,10 @@
         "name": "drivaernet_fullpressure",
         "metaname": "gnpde-unstructured/drivaernet",
         "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaernet/",
-        "train_size": 5817,
-        "val_size": 1148,
-        "test_size": 1154,
-        "batch_size": 10,
+        "train_size": 190,
+        "val_size": 10,
+        "test_size": 10,
+        "batch_size": 2,
         "num_workers": 4,
         "shuffle": true,
         "metric_suite": "general"

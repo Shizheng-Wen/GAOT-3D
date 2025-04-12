@@ -115,6 +115,7 @@ class StaticTrainer3D(TrainerBase):
         
         # --- Calculate or Load Normalization Stats ---
         self._calculate_or_load_stats(dataset_config, order_file_path, data_root)
+        
 
         # --- Define Transforms ---
         rescale_transform = RescalePosition(lims=(-1., 1.))
@@ -122,7 +123,7 @@ class StaticTrainer3D(TrainerBase):
         composed_transform = Compose([rescale_transform, normalize_transform])
 
         if self.setup_config.train:
-            print("Loading training dataset ...")
+            print(f"Rank {self.setup_config.rank}: Loading train dataset...")
             train_ds = VTKMeshDataset(
                 root = data_root,
                 order_file = order_file_path,
@@ -130,7 +131,7 @@ class StaticTrainer3D(TrainerBase):
                 split="train",
                 transform = composed_transform
             )
-            print("Loading validation dataset ...")
+            print(f"Rank {self.setup_config.rank}: Loading validation dataset...")
             val_ds = VTKMeshDataset(
                 root = data_root,
                 order_file = order_file_path,
@@ -138,7 +139,7 @@ class StaticTrainer3D(TrainerBase):
                 split="val",
                 transform = composed_transform
             )
-        print("Loading testing dataset ...")
+        print(f"Rank {self.setup_config.rank}: Loading test dataset...")
         test_ds = VTKMeshDataset(
             root = data_root,
             order_file = order_file_path,
@@ -150,29 +151,52 @@ class StaticTrainer3D(TrainerBase):
         self.num_input_channels = 3
         self.num_output_channels = 1
         
+        # --- Create DataLoaders ---
         if self.setup_config.train:
+            ## --- Create DistributedSampler for training ---
+            train_sampler = None
+            if self.setup_config.distributed:
+                train_sampler = DistributedSampler(
+                    train_ds,
+                    num_replicas=self.setup_config.world_size,
+                    rank=self.setup_config.rank,
+                    shuffle=dataset_config.shuffle, # Sampler handles shuffling
+                    drop_last=True # Often good practice for DDP
+                )
+                print(f"Rank {self.setup_config.rank}: Created DistributedSampler for training.")
+
             self.train_loader = PyGDataLoader(
                 train_ds,
                 batch_size=dataset_config.batch_size,
-                shuffle=dataset_config.shuffle,
+                shuffle=False if train_sampler is not None else dataset_config.shuffle,
                 num_workers=dataset_config.num_workers,
+                sampler=train_sampler,
                 pin_memory=True, # Good practice if using GPU
-                # drop_last=True # Consider if needed for distributed training
+                drop_last=train_sampler is not None 
             )
+
+            val_sampler = None
+            # if self.setup_config.distributed:
+            #     val_sampler = DistributedSampler(val_ds, shuffle=False, rank=self.setup_config.rank)
             self.val_loader = PyGDataLoader(
                 val_ds,
                 batch_size=dataset_config.batch_size,
                 shuffle=False,
                 num_workers=dataset_config.num_workers,
-                pin_memory=True
+                pin_memory=True,
+                sampler=val_sampler
             )
 
-        self.test_loader = PyGDataLoader(
+        test_sampler = None
+        # if self.setup_config.distributed:
+        #     test_sampler = DistributedSampler(test_ds, shuffle=False, rank=self.setup_config.rank)
+        self.test_loader = PyGDataLoader(   
             test_ds,
             batch_size=dataset_config.batch_size,
             shuffle=False,
             num_workers=dataset_config.num_workers,
-            pin_memory=True
+            pin_memory=True,
+            sampler=test_sampler
         )
 
         # --- Latent Tokens (remains the same) ---
@@ -187,7 +211,7 @@ class StaticTrainer3D(TrainerBase):
         )
         latent_queries = torch.stack(meshgrid, dim = -1).reshape(-1, 3)
         self.latent_tokens = rescale(latent_queries, (-1, 1))
-        print("Dataset initialization with PyG finished.")
+        print(f"Rank {self.setup_config.rank}: Dataset initialization finished.")
 
     def init_model(self, model_config):
         self.model = init_model(
@@ -196,7 +220,7 @@ class StaticTrainer3D(TrainerBase):
             model=model_config.name,
             config=model_config.args
             )
-        breakpoint()
+
         self.model.to(self.device)
         
         if self.setup_config.distributed:
@@ -239,13 +263,16 @@ class StaticTrainer3D(TrainerBase):
 
     def test(self):
         self.model.eval()
-        self.model.to(self.device)
         metric_suite = self.dataset_config.metric_suite
-        all_batch_metrics_data = []
-        all_batch_coords = []
-        all_batch_targets = []
-        all_batch_preds = []
         
+        all_poseidon_batch_errors = []
+        all_general_batch_metrics_dicts = [] 
+
+        # Store data needed for metric calculation and plotting
+        all_batch_targets_denorm = []
+        all_batch_preds_denorm = []
+        plot_coords, plot_gtr, plot_prd = None, None, None # For plotting first sample
+
         print(f"Starting testing with metric suite: '{metric_suite}'")
 
         with torch.no_grad():
@@ -253,106 +280,103 @@ class StaticTrainer3D(TrainerBase):
                 batch = batch.to(self.device)
                 latent_tokens_dev = self.latent_tokens.to(self.device)
 
-
-                pred_norm = self.model(
-                    batch,
-                    latent_tokens_dev
-                )
+                pred_norm = self.model(batch, latent_tokens_dev)
                 target_norm = batch.x
 
+                # De-normalize predictions and targets
                 u_std_dev = self.u_std.to(self.device)
                 u_mean_dev = self.u_mean.to(self.device)
                 pred_de_norm = pred_norm * u_std_dev + u_mean_dev
                 target_de_norm = target_norm * u_std_dev + u_mean_dev
 
-                all_batch_targets.append(target_de_norm.cpu())
-                all_batch_preds.append(pred_de_norm.cpu())
+                # --- Store results for aggregation ---
+                # Store de-normalized results on CPU to save GPU memory
+                all_batch_targets_denorm.append(target_de_norm.cpu())
+                all_batch_preds_denorm.append(pred_de_norm.cpu())
+                # --- End Storing ---
 
+                # --- Plotting Logic (extract data for first sample of first batch) ---
                 if i == 0 and self.setup_config.rank == 0:
-                    try:
-                        first_graph_indices = torch.where(batch.batch == 0)[0]
-                        plot_coords = batch.pos[first_graph_indices].cpu().numpy()
-                        plot_gtr = target_de_norm[first_graph_indices].cpu().numpy()
-                        plot_prd = pred_de_norm[first_graph_indices].cpu().numpy()
-                    except Exception as e:
-                        print(f"Error extracting first graph data for plotting: {e}")
-                        plot_coords, plot_gtr, plot_prd = None, None, None
+                    plotting_idx = 0
+                    first_graph_node_mask = (batch.batch == plotting_idx)
+                    plot_coords = batch.pos[first_graph_node_mask].cpu().numpy()
+                    plot_gtr = target_de_norm[first_graph_node_mask].cpu().numpy()
+                    plot_prd = pred_de_norm[first_graph_node_mask].cpu().numpy()
+                    print(f"Extracted plotting data of {batch.filename[plotting_idx]}:"
+                            f"coords shape {plot_coords.shape}, gtr shape {plot_gtr.shape}, prd shape {plot_prd.shape}"
+                        )
+                # --- End Plotting Logic ---
 
+        # --- Aggregate Metrics and Plot (Rank 0 only) ---
         if self.setup_config.rank == 0:
-            if not all_batch_preds:
-                print("Warning: No predictions collected during testing.")
-                return
+            full_preds = torch.cat(all_batch_preds_denorm, dim=0)
+            full_targets = torch.cat(all_batch_targets_denorm, dim=0)
+            print(f"Concatenated results: preds shape {full_preds.shape}, targets shape {full_targets.shape}")
 
+            # --- Calculate Metrics ---
             if metric_suite == "poseidon":
-                # Poseidon metric needs modification for PyG batch structure
-                # It expects [B, T, S, V] and metadata. Adapting it requires care.
-                # Placeholder: Indicate need for adaptation
-                print("Warning: 'poseidon' metric suite requires adaptation for PyG data structure. Skipping.")
+                # Adapting Poseidon metric requires metadata and careful handling of batch structure.
+                # We need to reshape full_targets/full_preds back into [NumSamples, 1, NumNodesPerSample, C]
+                # This is non-trivial because NumNodesPerSample varies.
+                # Compute_batch_errors expects [B, T, S, V].
+                # We will skip the actual calculation here as it needs significant adaptation.
+                print("Warning: 'poseidon' metric suite requires adaptation for variable nodes per sample PyG structure. Skipping calculation.")
                 final_metric = float('nan')
-                self.config.datarow["relative error (direct)"] = final_metric
+                self.config.datarow["relative error (direct)"] = final_metric # Store NaN
 
             elif metric_suite == "general":
-                 # Compute general metrics on the concatenated full dataset results
-                 # Note: compute_general_metrics_batch expects [B,...], we pass [N_total, C]
-                 # Let's compute directly here for simplicity
-                 diff = full_preds - full_targets
-                 mse = torch.mean(diff ** 2).item()
-                 mae = torch.mean(torch.abs(diff)).item()
-                 max_ae = torch.max(torch.abs(diff)).item()
+                # Calculate general metrics on the full concatenated tensors
+                diff = full_preds - full_targets
+                n_points = diff.shape[0]
+                mse = torch.mean(diff ** 2).item()/n_points
+                mae = torch.mean(torch.abs(diff)).item()/n_points
+                max_ae = torch.max(torch.abs(diff)).item()/n_points
 
-                 norm_diff_l2 = torch.linalg.norm(diff)
-                 norm_gtr_l2 = torch.linalg.norm(full_targets)
-                 rel_l2 = (norm_diff_l2 / (norm_gtr_l2 + EPSILON)).item() * 100.0
+                norm_diff_l2 = torch.linalg.norm(diff.float()) 
+                norm_gtr_l2 = torch.linalg.norm(full_targets.float())
+                rel_l2 = (norm_diff_l2 / (norm_gtr_l2 + EPSILON)).item() * 100.0
 
-                 norm_diff_l1 = torch.linalg.norm(diff, ord=1)
-                 norm_gtr_l1 = torch.linalg.norm(full_targets, ord=1)
-                 rel_l1 = (norm_diff_l1 / (norm_gtr_l1 + EPSILON)).item() * 100.0
+                norm_diff_l1 = torch.linalg.norm(diff.float(), ord=1)
+                norm_gtr_l1 = torch.linalg.norm(full_targets.float(), ord=1)
+                rel_l1 = (norm_diff_l1 / (norm_gtr_l1 + EPSILON)).item() * 100.0
 
-                 final_metrics_dict = {
+                final_metrics_dict = {
                     'MSE': mse, 'MAE': mae, 'Max AE': max_ae,
                     'Rel L2 Error (%)': rel_l2, 'Rel L1 Error (%)': rel_l1
-                 }
+                }
 
-                 # Store and print as before
-                 self.config.datarow["MSE (x10^-2)"] = final_metrics_dict['MSE'] * 100
-                 self.config.datarow["MAE (x10^-1)"] = final_metrics_dict['MAE'] * 10
-                 self.config.datarow["Max AE"] = final_metrics_dict['Max AE']
-                 self.config.datarow["Rel L2 Error (%)"] = final_metrics_dict['Rel L2 Error (%)']
-                 self.config.datarow["Rel L1 Error (%)"] = final_metrics_dict['Rel L1 Error (%)']
+                # Store and print results
+                self.config.datarow["MSE (x10^-2)"] = final_metrics_dict['MSE'] * 100
+                self.config.datarow["MAE (x10^-1)"] = final_metrics_dict['MAE'] * 10
+                self.config.datarow["Max AE"] = final_metrics_dict['Max AE']
+                self.config.datarow["Rel L2 Error (%)"] = final_metrics_dict['Rel L2 Error (%)']
+                self.config.datarow["Rel L1 Error (%)"] = final_metrics_dict['Rel L1 Error (%)']
 
-                 print(f"--- Final Metrics (General Suite - Full Dataset) ---")
-                 print(f"MSE (x10^-2):       {final_metrics_dict['MSE'] * 100:.4f}")
-                 print(f"MAE (x10^-1):       {final_metrics_dict['MAE'] * 10:.4f}")
-                 print(f"Max AE:             {final_metrics_dict['Max AE']:.4f}")
-                 print(f"Rel L2 Error (%):   {final_metrics_dict['Rel L2 Error (%)']:.4f}")
-                 print(f"Rel L1 Error (%):   {final_metrics_dict['Rel L1 Error (%)']:.4f}")
+                print(f"--- Final Metrics (General Suite - Full Dataset) ---")
+                print(f"MSE (x10^-2):       {final_metrics_dict['MSE'] * 100:.4f}")
+                print(f"MAE (x10^-1):       {final_metrics_dict['MAE'] * 10:.4f}")
+                print(f"Max AE:             {final_metrics_dict['Max AE']:.4f}")
+                print(f"Rel L2 Error (%):   {final_metrics_dict['Rel L2 Error (%)']:.4f}")
+                print(f"Rel L1 Error (%):   {final_metrics_dict['Rel L1 Error (%)']:.4f}")
 
             # --- Plotting the stored first sample ---
-            if plot_coords is not None:
-                try:
-                    channel_to_plot = 0
-                    if plot_prd.shape[-1] <= channel_to_plot: channel_to_plot = 0
+            print("Attempting to plot first sample...")
+            try:
+                channel_to_plot = 0
+                gtr_np = plot_gtr[:, channel_to_plot]
+                prd_np = plot_prd[:, channel_to_plot]
 
-                    gtr_np = plot_gtr[:, channel_to_plot]
-                    prd_np = plot_prd[:, channel_to_plot]
-
-                    try: # Get variable name
-                        var_name_idx = self.metadata.active_variables[channel_to_plot]
-                        var_name = self.metadata.names['u'][var_name_idx]
-                    except (IndexError, KeyError, TypeError, AttributeError):
-                        var_name = f"Channel {channel_to_plot}"
-
-                    plot_save_path = os.path.join(self.path_config.result_path, f"test_sample_0_channel_{channel_to_plot}.png")
-                    os.makedirs(os.path.dirname(plot_save_path), exist_ok=True)
-
-                    plot_3d_comparison_matplotlib(
-                        coords=plot_coords, u_gtr=gtr_np, u_prd=prd_np,
-                        save_path=plot_save_path, variable_name=var_name,
-                        point_size=2.0, view_angle=(25, -135) # Example angle
-                    )
-                    print(f"Saved plot for first test sample to {plot_save_path}")
-                except Exception as plot_err:
-                    print(f"Error during 3D plotting of first test sample: {plot_err}")
+                plot_save_path = self.path_config.result_path
+                var_name = self.metadata.names['u'] 
+                plot_3d_comparison_matplotlib(
+                    coords=plot_coords, u_gtr=gtr_np, u_prd=prd_np,
+                    save_path=plot_save_path,
+                    variable_name=var_name,
+                    point_size=2.0, view_angle=(25, -135)
+                )
+                print(f"Saved plot for first test sample to {plot_save_path}")
+            except Exception as plot_err:
+                print(f"Error during 3D plotting of first test sample: {plot_err}")
 
         elif self.setup_config.distributed:
              pass # Handle non-rank 0 processes
