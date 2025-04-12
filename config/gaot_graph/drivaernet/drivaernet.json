@@ -17,6 +17,7 @@
         "args": {
             "latent_tokens": [32,32,32],
             "magno": {
+                "use_gno": true,
                 "gno_coord_dim": 3,
                 "neighbor_strategy": "radius",
                 "projection_channels": 256,
@@ -27,7 +28,8 @@
                 "gno_use_torch_cluster": true,
                 "attention_type": "cosine",
                 "use_geoembed": true,
-                "embedding_method": "statistical"
+                "embedding_method": "statistical",
+                "encoder_feature_attr": "pos"
             },
             "transformer": {
                 "patch_size": 4,

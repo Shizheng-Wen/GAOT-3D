@@ -31,6 +31,7 @@ class MAGNOConfig:
     gno_radius: float = 0.033
     ## GNOEncoder
     lifting_channels: int = 16   
+    encoder_feature_attr: str = 'x'
     in_gno_channel_mlp_hidden_layers: list = field(default_factory=lambda: [64, 64, 64])
     in_gno_transform_type: str = 'linear'
     ## GNODecoder
@@ -132,6 +133,7 @@ class GNOEncoder(nn.Module):
         self.scales = gno_config.scales
         self.lifting_channels = gno_config.lifting_channels
         self.coord_dim = gno_config.gno_coord_dim
+        self.feature_attr_name = gno_config.encoder_feature_attr
 
         # --- Store Neighbor Finding Strategy ---
         self.neighbor_strategy = gno_config.neighbor_strategy
@@ -212,13 +214,15 @@ class GNOEncoder(nn.Module):
             latent_tokens_batch_idx (Tensor): Batch index for latent tokens [TotalLatentNodes].
         """
         phys_pos = batch.pos          # [TotalNodes_phys, D]
-        phys_feat = batch.pos          # [TotalNodes_phys, C_in]
         batch_idx_phys = batch.batch # [TotalNodes_phys]
         device = phys_pos.device
         num_graphs = batch.num_graphs
         num_latent_tokens_per_graph = latent_tokens_pos.shape[0] // num_graphs # Calculate M
 
-
+        phys_feat = getattr(batch, self.feature_attr_name, None)
+        if phys_feat is None:
+            if self.use_gno:
+                raise AttributeError(f"GNOEncoder requires feature attribute '{self.feature_attr_name}' but it was not found in the batch.")
 
         # --- Multi-Scale GNO encoding ---
         encoded_scales = []
