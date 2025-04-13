@@ -54,7 +54,7 @@ class MAGNOConfig:
     # Sampling
     sampling_strategy: Optional[str] = None
     max_neighbors: Optional[int] = None
-    sample_ratio: Optional[float] = None
+    sample_ratio: Optional[float] = None 
     # neighbor finding strategy
     neighbor_strategy: str = 'radius'       # ["radius", "knn", "bidirectional"]
 
@@ -242,7 +242,6 @@ class GNOEncoder(nn.Module):
                 ## --- Lifting MLP ---
                 ## ChannelMLP expects [B, C, N] or [C, N*B], using latter
                 phys_feat_lifted = self.lifting(phys_feat.transpose(0, 1)).transpose(0, 1) # [TotalNodes_phys, C_lifted]
-
                 encoded_gno = self.gno(
                     y_pos=phys_pos,           # Source coords (physical)
                     x_pos=latent_tokens_pos, # Query coords (latent)

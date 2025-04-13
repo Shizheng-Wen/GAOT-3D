@@ -199,7 +199,7 @@ class StaticTrainer3D(TrainerBase):
             sampler=test_sampler
         )
 
-        # --- Latent Tokens (remains the same) ---
+        # --- Latent Tokens ---
         phy_domain = self.metadata.domain_x
         x_min, y_min, z_min = phy_domain[0]
         x_max, y_max, z_max = phy_domain[1]
@@ -272,7 +272,8 @@ class StaticTrainer3D(TrainerBase):
         all_batch_targets_denorm = []
         all_batch_preds_denorm = []
         plot_coords, plot_gtr, plot_prd = None, None, None # For plotting first sample
-
+        
+        num_test_samples = len(self.test_loader.dataset)
         print(f"Starting testing with metric suite: '{metric_suite}'")
 
         with torch.no_grad():
@@ -327,10 +328,9 @@ class StaticTrainer3D(TrainerBase):
             elif metric_suite == "general":
                 # Calculate general metrics on the full concatenated tensors
                 diff = full_preds - full_targets
-                n_points = diff.shape[0]
-                mse = torch.mean(diff ** 2).item()/n_points
-                mae = torch.mean(torch.abs(diff)).item()/n_points
-                max_ae = torch.max(torch.abs(diff)).item()/n_points
+                mse = torch.mean(diff ** 2).item()/num_test_samples
+                mae = torch.mean(torch.abs(diff)).item()/num_test_samples
+                max_ae = torch.max(torch.abs(diff)).item()/num_test_samples
 
                 norm_diff_l2 = torch.linalg.norm(diff.float()) 
                 norm_gtr_l2 = torch.linalg.norm(full_targets.float())

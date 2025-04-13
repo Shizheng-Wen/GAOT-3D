@@ -4,8 +4,8 @@
         "device": "cuda:0",
         "dtype": "torch.float32",
         "trainer_name": "static3d",
-        "train": true,
-        "test": false,
+        "train": false,
+        "test": true,
         "ckpt": false,
         "use_variance_test": false,
         "distributed": true
@@ -32,7 +32,7 @@
                 "encoder_feature_attr": "pos"
             },
             "transformer": {
-                "patch_size": 4,
+                "patch_size": 2,
                 "hidden_size": 256,
                 "use_attn_norm": true,
                 "use_ffn_norm": true,
@@ -60,9 +60,9 @@
         "name": "drivaernet_fullpressure",
         "metaname": "gnpde-unstructured/drivaernet",
         "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaernet/",
-        "train_size": 190,
+        "train_size": 2000,
         "val_size": 10,
-        "test_size": 10,
+        "test_size": 1154,
         "batch_size": 2,
         "num_workers": 4,
         "shuffle": true,
@@ -73,7 +73,7 @@
         "args": {
             "lr": 1e-3,
             "weight_decay": 1e-05,
-            "epoch": 500,
+            "epoch": 200,
             "loss_scale": 1.0,
             "eval_every_eps": 2,
             "scheduler": "mix",
@@ -83,9 +83,9 @@
         }
     },
     "path": {
-        "ckpt_path": ".ckpt/gaot/drivaernet/drivaernet.pt",
-        "loss_path": ".loss/gaot/drivaernet/drivaernet.png",
-        "result_path": ".results/gaot/drivaernet/drivaernet.png",
-        "database_path": ".database/gaot/drivaernet/drivaernet.csv"
+        "ckpt_path": ".ckpt/gaot_graph/drivaernet/drivaernet.pt",
+        "loss_path": ".loss/gaot_graph/drivaernet/drivaernet.png",
+        "result_path": ".results/gaot_graph/drivaernet/drivaernet.png",
+        "database_path": ".database/gaot_graph/drivaernet/drivaernet.csv"
     }
 }
