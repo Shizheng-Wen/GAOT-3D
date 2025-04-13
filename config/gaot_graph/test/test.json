@@ -17,9 +17,9 @@
         "args": {
             "latent_tokens": [64,32,32],
             "magno": {
-                "use_gno": false,
+                "use_gno": true,
                 "gno_coord_dim": 3,
-                "neighbor_strategy": "radius",
+                "neighbor_strategy": "bidirectional",
                 "projection_channels": 256,
                 "in_gno_channel_mlp_hidden_layers": [64,64,64],
                 "out_gno_channel_mlp_hidden_layers": [64,64],
@@ -29,7 +29,8 @@
                 "attention_type": "cosine",
                 "use_geoembed": true,
                 "embedding_method": "statistical",
-                "encoder_feature_attr": "pos"
+                "encoder_feature_attr": "pos",
+                "precompute_edges": false
             },
             "transformer": {
                 "patch_size": 2,
@@ -60,14 +61,14 @@
         "name": "drivaernet_fullpressure",
         "metaname": "gnpde-unstructured/drivaernet",
         "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaernet/",
-        "train_size": 200,
+        "train_size": 20,
         "val_size": 10,
         "test_size": 10,
         "batch_size": 2,
         "num_workers": 4,
         "shuffle": true,
         "metric_suite": "general",
-        "update_pt_files_with_edges": true
+        "update_pt_files_with_edges": false
     },
     "optimizer": {
         "name": "adamw",

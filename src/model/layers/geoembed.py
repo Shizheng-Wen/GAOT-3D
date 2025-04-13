@@ -118,16 +118,15 @@ class GeometricEmbedding(nn.Module):
         num_queries = query_pos.shape[0]
         num_dims = query_pos.shape[1]
         device = query_pos.device
-
+    
         # 从 edge_index 提取邻居信息
-        neighbors_index = edge_index[1]  # 源节点的索引，形状: [NumEdges]
-        query_indices_per_neighbor = edge_index[0]  # 每个邻居对应的查询节点索引，形状: [NumEdges]
+        neighbors_index = edge_index[1].long()  # 源节点的索引，形状: [NumEdges]
+        query_indices_per_neighbor = edge_index[0].long()  # 每个邻居对应的查询节点索引，形状: [NumEdges]
         if neighbors_counts is None:
             num_neighbors_per_query = torch.bincount(query_indices_per_neighbor, minlength=num_queries).to(device)  # 每个查询节点的邻居数，形状: [num_queries]
         else:
             neighbors_counts = neighbors_counts.to(device)
             num_neighbors_per_query = neighbors_counts
-
         # 邻居数量和是否有邻居的标志
         N_i = num_neighbors_per_query.float()  # 形状: [num_queries]
         has_neighbors = N_i > 0  # 形状: [num_queries]

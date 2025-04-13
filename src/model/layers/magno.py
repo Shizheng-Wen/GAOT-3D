@@ -229,13 +229,13 @@ class GNOEncoder(nn.Module):
 
         # --- Multi-Scale GNO encoding ---
         encoded_scales = []
-        for scale in self.scales:
+        for scale_idx, scale in enumerate(self.scales):
             scaled_radius = self.gno_radius * scale
             # Dynamic Bipartite Neighbor Search: physical (data) -> latent (query)
             # --- Get Edge Index and Optional Counts ---
             if self.precompute_edges:
-                edge_index_attr = f'encoder_edge_index_s{scale}'
-                counts_attr = f'encoder_query_counts_s{scale}'
+                edge_index_attr = f'encoder_edge_index_s{scale_idx}'
+                counts_attr = f'encoder_query_counts_s{scale_idx}'
                 if not hasattr(batch, edge_index_attr):
                      raise AttributeError(f"Batch object missing pre-computed '{edge_index_attr}'")
                 edge_index = getattr(batch, edge_index_attr).to(device)
@@ -253,7 +253,6 @@ class GNOEncoder(nn.Module):
                     radius = scaled_radius
                 )
                 neighbor_counts = None
-
             # --- Conditional GNO Path ---
             if self.use_gno:
                 ## --- Lifting MLP ---
@@ -277,7 +276,7 @@ class GNOEncoder(nn.Module):
                     edge_index = edge_index,           # Pass edge_index if needed by implementation
                     batch_source = batch_idx_phys,       # Pass batch info if needed
                     batch_query = latent_tokens_batch_idx,
-                    neighbor_counts = neighbor_counts        # Optional neighbor counts for GeoEmbed
+                    neighbors_counts = neighbor_counts        # Optional neighbor counts for GeoEmbed
                 ) # Output shape: [TotalNodes_latent, C_lifted]
             else:
                 geo_embedding = None
@@ -417,14 +416,14 @@ class GNODecoder(nn.Module):
 
         # --- Multi-Scale GNO decoding ---
         decoded_scales = []
-        for scale in self.scales:
+        for scale_idx, scale in enumerate(self.scales):
             scaled_radius = self.gno_radius * scale
             # Dynamic Bipartite Neighbor Search: latent (data) -> physical (query)
 
             # --- Get Edge Index and Optional Counts ---
             if self.precompute_edges:
-                edge_index_attr = f'decoder_edge_index_s{scale}'
-                counts_attr = f'decoder_query_counts_s{scale}' # Note: query for decoder is physical
+                edge_index_attr = f'decoder_edge_index_s{scale_idx}'
+                counts_attr = f'decoder_query_counts_s{scale_idx}' # Note: query for decoder is physical
                 if not hasattr(batch, edge_index_attr):
                      raise AttributeError(f"Batch object missing pre-computed '{edge_index_attr}'")
                 edge_index = getattr(batch, edge_index_attr).to(device)
@@ -462,7 +461,7 @@ class GNODecoder(nn.Module):
                     edge_index = edge_index, # If needed
                     batch_source = latent_tokens_batch_idx,
                     batch_query = batch_idx_phys_query,
-                    neighbor_counts = neighbor_counts # Optional neighbor counts for GeoEmbed
+                    neighbors_counts = neighbor_counts # Optional neighbor counts for GeoEmbed
                  ) # Output shape: [TotalNodes_phys, C_in]
                  combined = torch.cat([decoded_unpatched, geoembedding], dim=-1)
                  # Apply recovery MLP 

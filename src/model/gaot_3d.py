@@ -325,7 +325,8 @@ class GAOT3D(nn.Module):
             phys_pos_query=phys_pos_query_eff,
             batch_idx_phys_query=batch_idx_phys_query_eff,
             latent_tokens_pos=latent_tokens_batched,
-            latent_tokens_batch_idx=batch_idx_latent
+            latent_tokens_batch_idx=batch_idx_latent,
+            batch = batch
             )
 
         return output

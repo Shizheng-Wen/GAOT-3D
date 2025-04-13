@@ -20,7 +20,7 @@ from .utils.data_pairs import CustomDataset
 from .utils.default_set import ModelConfig, merge_config
 
 from src.data.dataset import Metadata, DATASET_METADATA
-from src.data.pyg_datasets import VTKMeshDataset
+from src.data.pyg_datasets import VTKMeshDataset, EnrichedData
 from src.data.pyg_transforms import RescalePosition, NormalizeFeatures
 from src.model import init_model
 from tqdm import tqdm
@@ -114,8 +114,21 @@ class StaticTrainer3D(TrainerBase):
              raise FileNotFoundError(f"Processed directory for update not found: {processed_dir}")
         
         with open(order_file_path, 'r') as f:
-            filenames_to_process = [line.strip() for line in f if line.strip()]
+            all_filenames_base = [line.strip() for line in f if line.strip()]
+        total_samples = len(all_filenames_base)
+        train_size = dataset_config.train_size
+        val_size = dataset_config.val_size
+        # Test size calculation depends on how split was done previously
+        test_size = dataset_config.test_size
+        indices = np.arange(total_samples) 
+        # Note: rand_dataset shuffling is NOT applied here, we process based on original order file names
+        train_indices = indices[:train_size]
+        val_indices = indices[train_size : train_size + val_size]
+        test_indices = indices[-test_size:] 
+        relevant_indices = np.concatenate([train_indices, val_indices, test_indices])
+        filenames_to_process = [f"{all_filenames_base[i]}.pt" for i in relevant_indices]
 
+        
         print(f"Rank 0: Checking/Updating {len(filenames_to_process)} '.pt' files in {processed_dir} with edge information...")
 
         latent_tokens_cpu = self.latent_tokens.cpu()
@@ -127,7 +140,13 @@ class StaticTrainer3D(TrainerBase):
             fpath_tmp = fpath + ".tmp"
 
             try:
-                data = torch.load(fpath, map_location='cpu')
+                data_old = torch.load(fpath, map_location='cpu')
+                data = EnrichedData(pos = data_old.pos, x=data_old.x)
+                for attr, value in data_old:
+                     if attr not in ['pos', 'x']: 
+                         setattr(data, attr, value)
+                data.num_latent_nodes = num_latent_tokens
+
                 phys_pos = rescale(data.pos.to(torch.float), (-1, 1)) # Rescale to [-1, 1], very important!
                 num_physical_nodes = phys_pos.shape[0]
                 batch_idx_phys = torch.zeros(num_physical_nodes, dtype=torch.long)
@@ -145,7 +164,6 @@ class StaticTrainer3D(TrainerBase):
                         radius=scaled_radius
                     ).to(torch.int32)
                     setattr(data, f'encoder_edge_index_s{scale_idx}', enc_edge_index)
-
                     if enc_edge_index.numel() > 0:
                         enc_counts = torch.bincount(enc_edge_index[0], minlength=num_latent_tokens).to(torch.int32)
                     else:

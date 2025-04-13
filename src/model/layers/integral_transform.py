@@ -236,10 +236,10 @@ class IntegralTransform(nn.Module):
 
         # Apply edge weights if provided (e.g., distances, kernel values not from MLP)
         reduction = "sum" if (self.use_attn and attention_weights is not None) else "mean"
-        
+       
         out_features = scatter(
             src=rep_features_transformed,
-            index=query_idx,
+            index=query_idx.long(),
             dim=0,                   # Aggregate along the edge dimension
             dim_size=num_query_nodes,# Output size is number of query nodes
             reduce=reduction

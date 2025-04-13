@@ -5,6 +5,32 @@ from torch_geometric.data import Dataset, Data
 from tqdm import tqdm
 import numpy as np
 
+
+class EnrichedData(Data):
+    """Custom Data class to handle increments for bipartite edge indices."""
+
+    def __inc__(self, key, value, *args, **kwargs):
+        """
+        Specifies how attributes should be incremented when batching.
+        key: The name of the attribute.
+        value: The attribute's tensor value.
+        """
+        if key.startswith('encoder_edge_index'):
+            # Encoder: edge_index[0] indexes LATENT, edge_index[1] indexes PHYSICAL
+            # Increment row 0 by num_latent_nodes, row 1 by num_physical_nodes
+            # Ensure 'num_latent_nodes' attribute exists in the Data object!
+            return torch.tensor([[self.num_latent_nodes], [self.num_nodes]])
+        elif key.startswith('decoder_edge_index'):
+            # Decoder: edge_index[0] indexes PHYSICAL, edge_index[1] indexes LATENT
+            # Increment row 0 by num_physical_nodes, row 1 by num_latent_nodes
+            return torch.tensor([[self.num_nodes], [self.num_latent_nodes]])
+        elif key.startswith('encoder_query_counts') or key.startswith('decoder_query_counts'):
+             # Counts should not be incremented during batching
+             return torch.tensor([0] * value.dim(), dtype=torch.long) # Or return 0 for scalar? Check PyG docs if needed. Assuming tensor counts.
+        else:
+            # Default PyG behavior for other attributes (like standard edge_index, face, etc.)
+            return super().__inc__(key, value, *args, **kwargs)
+
 class VTKMeshDataset(Dataset):
     """
     PyTorch Geometric Dataset for loading preprocessed VTK mesh data.
@@ -80,7 +106,6 @@ class VTKMeshDataset(Dataset):
         if getattr(self.dataset_config, 'rand_dataset', False):
              rng = np.random.default_rng(seed=42) 
              rng.shuffle(indices)
-
 
         if self.split == 'train':
             split_indices = indices[:train_size]
