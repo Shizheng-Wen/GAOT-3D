@@ -17,7 +17,7 @@ from .utils.metric import compute_batch_errors, compute_final_metric
 from .utils.metric import compute_general_metrics_batch, aggregate_general_metrics
 from .utils.plot import plot_3d_comparison_pyvista, plot_3d_comparison_matplotlib
 from .utils.data_pairs import CustomDataset
-
+from .utils.default_set import ModelConfig, merge_config
 
 from src.data.dataset import Metadata, DATASET_METADATA
 from src.data.pyg_datasets import VTKMeshDataset
@@ -101,6 +101,82 @@ class StaticTrainer3D(TrainerBase):
         self.u_mean = self.u_mean.to(self.dtype)
         self.u_std = self.u_std.to(self.dtype)
    
+    def _update_pt_files_with_edges(self, dataset_config, order_file_path, gno_config):
+        """
+        Iterates through processed .pt files, computes edges (and optionally counts),
+        and saves them back to the files. Runs ONLY on rank 0 in DDP.
+        """
+        if self.setup_config.rank != 0:
+            return
+        
+        processed_dir = os.path.join(dataset_config.base_path, "processed_pyg")
+        if not os.path.isdir(processed_dir):
+             raise FileNotFoundError(f"Processed directory for update not found: {processed_dir}")
+        
+        with open(order_file_path, 'r') as f:
+            filenames_to_process = [line.strip() for line in f if line.strip()]
+
+        print(f"Rank 0: Checking/Updating {len(filenames_to_process)} '.pt' files in {processed_dir} with edge information...")
+
+        latent_tokens_cpu = self.latent_tokens.cpu()
+        num_latent_tokens = latent_tokens_cpu.shape[0]
+
+        from src.model.layers.magno import get_neighbor_strategy
+        for filename in tqdm(filenames_to_process, desc="Updating .pt files"):
+            fpath = os.path.join(processed_dir, filename)
+            fpath_tmp = fpath + ".tmp"
+
+            try:
+                data = torch.load(fpath, map_location='cpu')
+                phys_pos = rescale(data.pos.to(torch.float), (-1, 1)) # Rescale to [-1, 1], very important!
+                num_physical_nodes = phys_pos.shape[0]
+                batch_idx_phys = torch.zeros(num_physical_nodes, dtype=torch.long)
+                batch_idx_latent = torch.zeros(num_latent_tokens, dtype=torch.long)
+
+                for scale_idx, scale in enumerate(gno_config.scales):
+                    scaled_radius = gno_config.gno_radius * scale
+                    # --- Encoder Edges ---
+                    enc_edge_index = get_neighbor_strategy(
+                        neighbor_strategy=gno_config.neighbor_strategy,
+                        phys_pos = phys_pos,
+                        batch_idx_phys = batch_idx_phys,
+                        latent_tokens_pos = latent_tokens_cpu,
+                        batch_idx_latent = batch_idx_latent,
+                        radius=scaled_radius
+                    ).to(torch.int32)
+                    setattr(data, f'encoder_edge_index_s{scale_idx}', enc_edge_index)
+
+                    if enc_edge_index.numel() > 0:
+                        enc_counts = torch.bincount(enc_edge_index[0], minlength=num_latent_tokens).to(torch.int32)
+                    else:
+                        enc_counts = torch.zeros(num_latent_tokens, dtype=torch.int32)
+                    setattr(data, f'encoder_query_counts_s{scale_idx}', enc_counts)
+                    # --- Decoder Edges ---
+                    dec_edge_index = get_neighbor_strategy(
+                        neighbor_strategy=gno_config.neighbor_strategy,
+                        phys_pos = latent_tokens_cpu,
+                        batch_idx_phys = batch_idx_latent,
+                        latent_tokens_pos = phys_pos,
+                        batch_idx_latent = batch_idx_phys,
+                        radius=scaled_radius
+                    ).to(torch.int32)
+                    setattr(data, f'decoder_edge_index_s{scale_idx}', dec_edge_index)
+                    if dec_edge_index.numel() > 0:
+                        dec_counts = torch.bincount(dec_edge_index[0], minlength=num_physical_nodes).to(torch.int32)
+                    else:
+                        dec_counts = torch.zeros(num_physical_nodes, dtype=torch.int32)
+                    setattr(data, f'decoder_query_counts_s{scale_idx}', dec_counts)
+                # --- Save updated data ---
+                torch.save(data, fpath_tmp)
+                os.replace(fpath_tmp, fpath)
+            except FileNotFoundError:
+                print(f"Warning: File not found during update: {fpath}")
+            except Exception as e:
+                print(f"Error processing file {fpath}: {e}")
+                if os.path.exists(fpath_tmp):
+                     os.remove(fpath_tmp)
+        print(f"Rank 0: Finished checking/updating '.pt' files.")
+            
     def init_dataset(self, dataset_config):
         print("Initializing PyG dataset ...")  
         self.latent_token_size = self.model_config.args.latent_tokens
@@ -113,6 +189,39 @@ class StaticTrainer3D(TrainerBase):
         if not os.path.exists(order_file_path):
             raise FileNotFoundError(f"Order file does not exist: {order_file_path}")
         
+        # --- Latent Tokens ---
+        phy_domain = self.metadata.domain_x
+        x_min, y_min, z_min = phy_domain[0]
+        x_max, y_max, z_max = phy_domain[1]
+        meshgrid = torch.meshgrid(
+            torch.linspace(x_min, x_max, self.latent_token_size[0]),
+            torch.linspace(y_min, y_max, self.latent_token_size[1]),
+            torch.linspace(z_min, z_max, self.latent_token_size[2]),
+            indexing = "ij"
+        )
+        latent_queries = torch.stack(meshgrid, dim = -1).reshape(-1, 3)
+        self.latent_tokens = rescale(latent_queries, (-1, 1))
+        print(f"Rank {self.setup_config.rank}: Dataset initialization finished.")
+
+        # --- Pre-computation /Update Step ---
+        if dataset_config.update_pt_files_with_edges:
+            gno_cfg_for_precompute = self.model_config.args.magno
+            if self.setup_config.rank == 0:
+                self._update_pt_files_with_edges(
+                    dataset_config,
+                    order_file_path,
+                    gno_cfg_for_precompute
+                )
+            if self.setup_config.distributed:
+                print(f"Rank {self.setup_config.rank}: Waiting for edge pre-computation barrier...")
+                torch.distributed.barrier()
+                print(f"Rank {self.setup_config.rank}: Barrier passed.")
+            
+            self.model_config.args.magno.precompute_edges = True
+            print(f"Rank {self.setup_config.rank}: Set model config to use precomputed edges.")
+
+        # --- end Pre-computation /Update Step ---
+            
         # --- Calculate or Load Normalization Stats ---
         self._calculate_or_load_stats(dataset_config, order_file_path, data_root)
         
@@ -198,20 +307,6 @@ class StaticTrainer3D(TrainerBase):
             pin_memory=True,
             sampler=test_sampler
         )
-
-        # --- Latent Tokens ---
-        phy_domain = self.metadata.domain_x
-        x_min, y_min, z_min = phy_domain[0]
-        x_max, y_max, z_max = phy_domain[1]
-        meshgrid = torch.meshgrid(
-            torch.linspace(x_min, x_max, self.latent_token_size[0]),
-            torch.linspace(y_min, y_max, self.latent_token_size[1]),
-            torch.linspace(z_min, z_max, self.latent_token_size[2]),
-            indexing = "ij"
-        )
-        latent_queries = torch.stack(meshgrid, dim = -1).reshape(-1, 3)
-        self.latent_tokens = rescale(latent_queries, (-1, 1))
-        print(f"Rank {self.setup_config.rank}: Dataset initialization finished.")
 
     def init_model(self, model_config):
         self.model = init_model(

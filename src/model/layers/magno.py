@@ -57,6 +57,8 @@ class MAGNOConfig:
     sample_ratio: Optional[float] = None 
     # neighbor finding strategy
     neighbor_strategy: str = 'radius'       # ["radius", "knn", "bidirectional"]
+    # Dataset
+    precompute_edges: bool = True          # Flag for model to load vs compute edges. This aligns with the update_pt_files_with_edges in DatasetConfig
 
 
 ############
@@ -134,6 +136,7 @@ class GNOEncoder(nn.Module):
         self.lifting_channels = gno_config.lifting_channels
         self.coord_dim = gno_config.gno_coord_dim
         self.feature_attr_name = gno_config.encoder_feature_attr
+        self.precompute_edges = gno_config.precompute_edges
 
         # --- Store Neighbor Finding Strategy ---
         self.neighbor_strategy = gno_config.neighbor_strategy
@@ -229,14 +232,28 @@ class GNOEncoder(nn.Module):
         for scale in self.scales:
             scaled_radius = self.gno_radius * scale
             # Dynamic Bipartite Neighbor Search: physical (data) -> latent (query)
-            edge_index = get_neighbor_strategy(
-                neighbor_strategy = self.neighbor_strategy,
-                phys_pos = phys_pos,               # Source = physical
-                batch_idx_phys = batch_idx_phys,        # Batch indices for physical
-                latent_tokens_pos = latent_tokens_pos,      # Query = latent
-                batch_idx_latent = latent_tokens_batch_idx, # Batch indices for latent
-                radius = scaled_radius
-            )
+            # --- Get Edge Index and Optional Counts ---
+            if self.precompute_edges:
+                edge_index_attr = f'encoder_edge_index_s{scale}'
+                counts_attr = f'encoder_query_counts_s{scale}'
+                if not hasattr(batch, edge_index_attr):
+                     raise AttributeError(f"Batch object missing pre-computed '{edge_index_attr}'")
+                edge_index = getattr(batch, edge_index_attr).to(device)
+                # Load optional counts for GeoEmbed
+                neighbor_counts = getattr(batch, counts_attr, None)
+                if neighbor_counts is not None:
+                    neighbor_counts = neighbor_counts.to(device)
+            else:
+                edge_index = get_neighbor_strategy(
+                    neighbor_strategy = self.neighbor_strategy,
+                    phys_pos = phys_pos,               # Source = physical
+                    batch_idx_phys = batch_idx_phys,        # Batch indices for physical
+                    latent_tokens_pos = latent_tokens_pos,      # Query = latent
+                    batch_idx_latent = latent_tokens_batch_idx, # Batch indices for latent
+                    radius = scaled_radius
+                )
+                neighbor_counts = None
+
             # --- Conditional GNO Path ---
             if self.use_gno:
                 ## --- Lifting MLP ---
@@ -255,11 +272,12 @@ class GNOEncoder(nn.Module):
             # --- Conditional GeoEmbed Path ---
             if self.use_geoembed:
                 geo_embedding = self.geoembed(
-                    phys_pos,             # Input geometry (physical)
-                    latent_tokens_pos, # Query points (latent)
-                    edge_index,           # Pass edge_index if needed by implementation
-                    batch_idx_phys,       # Pass batch info if needed
-                    latent_tokens_batch_idx
+                    source_pos = phys_pos,             # Input geometry (physical)
+                    query_pos = latent_tokens_pos, # Query points (latent)
+                    edge_index = edge_index,           # Pass edge_index if needed by implementation
+                    batch_source = batch_idx_phys,       # Pass batch info if needed
+                    batch_query = latent_tokens_batch_idx,
+                    neighbor_counts = neighbor_counts        # Optional neighbor counts for GeoEmbed
                 ) # Output shape: [TotalNodes_latent, C_lifted]
             else:
                 geo_embedding = None
@@ -314,6 +332,7 @@ class GNODecoder(nn.Module):
         self.out_channels = out_channels
         self.use_geoembed = gno_config.use_geoembed 
         self.use_scale_weights = gno_config.use_scale_weights
+        self.precompute_edges = gno_config.precompute_edges # store flag
 
         # --- Store Neighbor Strategy ---
         self.neighbor_strategy = gno_config.neighbor_strategy
@@ -382,7 +401,8 @@ class GNODecoder(nn.Module):
                 phys_pos_query: torch.Tensor,     # Physical query coords [TotalQuery, D]
                 batch_idx_phys_query: torch.Tensor,# Batch index for physical query [TotalQuery]
                 latent_tokens_pos: torch.Tensor,  # Latent token coords (source) [TotalLatent, D]
-                latent_tokens_batch_idx: torch.Tensor # Batch index for latent source [TotalLatent]
+                latent_tokens_batch_idx: torch.Tensor, # Batch index for latent source [TotalLatent]
+                batch: 'pyg.data.Batch' = None    # Optional batch object for precomputed edges
                ) -> torch.Tensor: # Return shape [TotalQuery, C_out]
         """
         Args:
@@ -391,6 +411,7 @@ class GNODecoder(nn.Module):
             batch_idx_phys_query (Tensor): Batch index for physical/query nodes [TotalQueryNodes].
             latent_tokens_pos (Tensor): Latent token coordinates (source) [TotalLatentNodes, D].
             latent_tokens_batch_idx (Tensor): Batch index for latent tokens (source) [TotalLatentNodes].
+            batch (Batch): Optional PyG batch object for precomputed edges.
         """
         device = rndata_flat.device
 
@@ -399,15 +420,28 @@ class GNODecoder(nn.Module):
         for scale in self.scales:
             scaled_radius = self.gno_radius * scale
             # Dynamic Bipartite Neighbor Search: latent (data) -> physical (query)
-            
-            edge_index = get_neighbor_strategy(
-                neighbor_strategy = self.neighbor_strategy,
-                phys_pos = latent_tokens_pos,             # Source = latent
-                batch_idx_phys = latent_tokens_batch_idx, # Batch indices for latent
-                latent_tokens_pos = phys_pos_query,       # Query = physical
-                batch_idx_latent = batch_idx_phys_query,  # Batch indices for physical
-                radius = scaled_radius
-            )
+
+            # --- Get Edge Index and Optional Counts ---
+            if self.precompute_edges:
+                edge_index_attr = f'decoder_edge_index_s{scale}'
+                counts_attr = f'decoder_query_counts_s{scale}' # Note: query for decoder is physical
+                if not hasattr(batch, edge_index_attr):
+                     raise AttributeError(f"Batch object missing pre-computed '{edge_index_attr}'")
+                edge_index = getattr(batch, edge_index_attr).to(device)
+                # Load optional counts for GeoEmbed
+                neighbor_counts = getattr(batch, counts_attr, None)
+                if neighbor_counts is not None:
+                    neighbor_counts = neighbor_counts.to(device)
+            else:
+                edge_index = get_neighbor_strategy(
+                    neighbor_strategy = self.neighbor_strategy,
+                    phys_pos = latent_tokens_pos,             # Source = latent
+                    batch_idx_phys = latent_tokens_batch_idx, # Batch indices for latent
+                    latent_tokens_pos = phys_pos_query,       # Query = physical
+                    batch_idx_latent = batch_idx_phys_query,  # Batch indices for physical
+                    radius = scaled_radius
+                )
+                neighbor_counts = None
 
             # GNO Layer Call
             decoded_unpatched = self.gno(
@@ -423,16 +457,16 @@ class GNODecoder(nn.Module):
             if self.use_geoembed:
                  # Geoembed needs latent_tokens_batched as input_geom, phys_pos as query points
                  geoembedding = self.geoembed(
-                      latent_tokens_pos,
-                      phys_pos_query,
-                      edge_index, # If needed
-                      latent_tokens_batch_idx,
-                      batch_idx_phys_query
+                    source_pos = latent_tokens_pos,
+                    query_pos = phys_pos_query,
+                    edge_index = edge_index, # If needed
+                    batch_source = latent_tokens_batch_idx,
+                    batch_query = batch_idx_phys_query,
+                    neighbor_counts = neighbor_counts # Optional neighbor counts for GeoEmbed
                  ) # Output shape: [TotalNodes_phys, C_in]
                  combined = torch.cat([decoded_unpatched, geoembedding], dim=-1)
                  # Apply recovery MLP 
                  decoded_unpatched = self.recovery(combined.permute(1,0)).permute(1,0) # Output: [TotalNodes_phys, C_in]
-
 
             decoded_scales.append(decoded_unpatched) # List of [TotalNodes_phys, C_in]
 

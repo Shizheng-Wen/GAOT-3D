@@ -60,7 +60,9 @@ class GeometricEmbedding(nn.Module):
                 query_pos: torch.Tensor,
                 edge_index: torch.Tensor,
                 batch_source: Optional[torch.Tensor] = None, # Included for completeness, but not used in current logic
-                batch_query: Optional[torch.Tensor] = None):
+                batch_query: Optional[torch.Tensor] = None,
+                neighbors_counts: Optional[torch.Tensor] = None
+                ) -> torch.Tensor:
         """
         Compute geometric embeddings using PyG batch format.
 
@@ -71,6 +73,7 @@ class GeometricEmbedding(nn.Module):
                                  and edge_index[1] indexes source_pos.
             batch_source (Tensor, optional): Batch index for source nodes.
             batch_query (Tensor, optional): Batch index for query nodes.
+            neighbors_counts (Tensor, optional): Number of neighbors for each query node.
 
         Returns:
             Tensor: Geometric embeddings for query nodes [TotalQueryNodes, output_dim].
@@ -78,7 +81,7 @@ class GeometricEmbedding(nn.Module):
         if self.method == 'statistical':
             # Pass PyG inputs to the adapted statistical features function
             geo_features = self._compute_statistical_features_pyg(
-                source_pos, query_pos, edge_index
+                source_pos, query_pos, edge_index, neighbors_counts
             )
             # Normalize features (moved inside _compute_statistical_features_pyg)
             return self.mlp(geo_features) # Apply final MLP
@@ -97,7 +100,7 @@ class GeometricEmbedding(nn.Module):
         # N_i, D_avg, D_var, Delta (D dims), PCA eigenvalues (D dims)
         return 3 + 2 * self.input_dim
 
-    def _compute_statistical_features_pyg(self, source_pos, query_pos, edge_index):
+    def _compute_statistical_features_pyg(self, source_pos, query_pos, edge_index, neighbors_counts = None):
         """
         Computes statistical geometric features using PyG edge_index.
 
@@ -106,6 +109,7 @@ class GeometricEmbedding(nn.Module):
             query_pos (Tensor): Coords of query nodes for which embeddings are computed [TotalQueryNodes, D].
             edge_index (Tensor): Bipartite edges [2, NumEdges], where edge_index[0] indexes query_pos,
                                 and edge_index[1] indexes source_pos.
+            neighbors_counts (Tensor, optional): Number of neighbors for each query node.
 
         Returns:
             geo_features_normalized (torch.FloatTensor): The normalized geometric features, shape: [TotalQueryNodes, num_features]
@@ -118,7 +122,11 @@ class GeometricEmbedding(nn.Module):
         # 从 edge_index 提取邻居信息
         neighbors_index = edge_index[1]  # 源节点的索引，形状: [NumEdges]
         query_indices_per_neighbor = edge_index[0]  # 每个邻居对应的查询节点索引，形状: [NumEdges]
-        num_neighbors_per_query = torch.bincount(query_indices_per_neighbor, minlength=num_queries).to(device)  # 每个查询节点的邻居数，形状: [num_queries]
+        if neighbors_counts is None:
+            num_neighbors_per_query = torch.bincount(query_indices_per_neighbor, minlength=num_queries).to(device)  # 每个查询节点的邻居数，形状: [num_queries]
+        else:
+            neighbors_counts = neighbors_counts.to(device)
+            num_neighbors_per_query = neighbors_counts
 
         # 邻居数量和是否有邻居的标志
         N_i = num_neighbors_per_query.float()  # 形状: [num_queries]

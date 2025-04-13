@@ -71,6 +71,8 @@ class DatasetConfig:
     names: List[str] = field(default_factory=lambda: ["Wave-Layer"])
     metanames: List[str] = field(default_factory=lambda: ["rigno-unstructured/Wave-Layer"])
     metric_suite: str = "poseidon"                                          # Literal["poseidon", "general"]
+    # for graph building
+    update_pt_files_with_edges: bool = False                                # Flag to trigger edge computation/saving
 
 @dataclass
 class OptimizerConfig:
