@@ -273,7 +273,7 @@ class GAOT3D(nn.Module):
         """
         num_graphs = batch.num_graphs
         device = batch.pos.device
-
+        
         # --- Determine Latent Tokens ---
         if tokens_pos is None:
             assert tokens_batch_idx is None, "tokens_batch_idx should be None if tokens_pos is None"

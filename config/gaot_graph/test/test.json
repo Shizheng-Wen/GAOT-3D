@@ -30,7 +30,7 @@
                 "use_geoembed": true,
                 "embedding_method": "statistical",
                 "encoder_feature_attr": "pos",
-                "precompute_edges": false
+                "precompute_edges": true
             },
             "transformer": {
                 "patch_size": 2,
@@ -61,14 +61,14 @@
         "name": "drivaernet_fullpressure",
         "metaname": "gnpde-unstructured/drivaernet",
         "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaernet/",
-        "train_size": 20,
-        "val_size": 10,
-        "test_size": 10,
-        "batch_size": 2,
+        "train_size": 5817,
+        "val_size": 1148,
+        "test_size": 1154,
+        "batch_size": 1,
         "num_workers": 4,
         "shuffle": true,
         "metric_suite": "general",
-        "update_pt_files_with_edges": false
+        "update_pt_files_with_edges": true
     },
     "optimizer": {
         "name": "adamw",

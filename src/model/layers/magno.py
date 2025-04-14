@@ -52,8 +52,8 @@ class MAGNOConfig:
     embedding_method: str = 'statistical'
     pooling: str = 'max' # pooling method for pointnet geoemb
     # Sampling
-    sampling_strategy: Optional[str] = None
-    max_neighbors: Optional[int] = None
+    sampling_strategy: Optional[str] = None   # ["max_neighbors", "ratio"]
+    max_neighbors: Optional[int] = None     
     sample_ratio: Optional[float] = None 
     # neighbor finding strategy
     neighbor_strategy: str = 'radius'       # ["radius", "knn", "bidirectional"]

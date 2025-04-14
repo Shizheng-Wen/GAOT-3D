@@ -54,6 +54,9 @@ class IntegralTransform(nn.Module):
         self.max_neighbors = max_neighbors
         self.sample_ratio = sample_ratio
 
+        if sampling_strategy == 'max_neighbors':
+            print("Warning: 'max_neighbors' sampling strategy with PyG edge_index is less efficient. Consider using 'ratio'.")
+
         # Init MLP based on channel_mlp or channel_mlp_layers
         if channel_mlp is None:
              if channel_mlp_layers is None: raise ValueError("Need channel_mlp or layers")
@@ -61,7 +64,7 @@ class IntegralTransform(nn.Module):
         else:
             self.channel_mlp = channel_mlp
         
-        # Initialize attention projections if needed
+        # InitiWarning: 'max_neighbors' sampling strategy with PyG edge_index is less efficient. Consider using 'ratio'.alize attention projections if needed
         if self.use_attn:
             if coord_dim is None:
                 raise ValueError("coord_dim must be specified when use_attn is True")
@@ -93,7 +96,7 @@ class IntegralTransform(nn.Module):
             # This remains tricky to vectorize efficiently with edge_index.
             # Using a loop over nodes requiring sampling is often the clearest.
             # PyG's dropout_adj has ratio-based, not max-count based logic.
-            print("Warning: 'max_neighbors' sampling strategy with PyG edge_index is less efficient. Consider using 'ratio'.")
+            # print("Warning: 'max_neighbors' sampling strategy with PyG edge_index is less efficient. Consider using 'ratio'.")
 
             dest_nodes = edge_index[0] 
             counts = torch.bincount(dest_nodes, minlength=num_query_nodes)

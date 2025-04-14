@@ -4,8 +4,8 @@
         "device": "cuda:0",
         "dtype": "torch.float32",
         "trainer_name": "static3d",
-        "train": true,
-        "test": false,
+        "train": false,
+        "test": true,
         "ckpt": false,
         "use_variance_test": false,
         "distributed": true
@@ -17,7 +17,7 @@
         "args": {
             "latent_tokens": [64,32,32],
             "magno": {
-                "use_gno": true,
+                "use_gno": false,
                 "gno_coord_dim": 3,
                 "neighbor_strategy": "bidirectional",
                 "projection_channels": 256,
@@ -30,9 +30,7 @@
                 "use_geoembed": true,
                 "embedding_method": "statistical",
                 "encoder_feature_attr": "pos",
-                "precompute_edges": true,
-                "sampling_strategy": "ratio",
-                "sample_ratio": 0.7
+                "precompute_edges": true
             },
             "transformer": {
                 "patch_size": 2,
@@ -63,8 +61,8 @@
         "name": "drivaernet_fullpressure",
         "metaname": "gnpde-unstructured/drivaernet",
         "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaernet/",
-        "train_size": 5817,
-        "val_size": 1148,
+        "train_size": 200,
+        "val_size": 10,
         "test_size": 1154,
         "batch_size": 1,
         "num_workers": 4,
@@ -87,9 +85,9 @@
         }
     },
     "path": {
-        "ckpt_path": ".ckpt/gaot_graph/drivaernet/drivaernet.pt",
-        "loss_path": ".loss/gaot_graph/drivaernet/drivaernet.png",
-        "result_path": ".results/gaot_graph/drivaernet/drivaernet.png",
-        "database_path": ".database/gaot_graph/drivaernet/drivaernet.csv"
+        "ckpt_path": ".ckpt/gaot_graph/test/no_gno.pt",
+        "loss_path": ".loss/gaot_graph/test/no_gno.png",
+        "result_path": ".results/gaot_graph/test/no_gno.png",
+        "database_path": ".database/gaot_graph/test/no_gno.csv"
     }
 }

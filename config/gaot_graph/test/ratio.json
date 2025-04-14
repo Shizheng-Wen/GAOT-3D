@@ -4,8 +4,8 @@
         "device": "cuda:0",
         "dtype": "torch.float32",
         "trainer_name": "static3d",
-        "train": true,
-        "test": false,
+        "train": false,
+        "test": true,
         "ckpt": false,
         "use_variance_test": false,
         "distributed": true
@@ -63,8 +63,8 @@
         "name": "drivaernet_fullpressure",
         "metaname": "gnpde-unstructured/drivaernet",
         "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaernet/",
-        "train_size": 5817,
-        "val_size": 1148,
+        "train_size": 200,
+        "val_size": 10,
         "test_size": 1154,
         "batch_size": 1,
         "num_workers": 4,
@@ -87,9 +87,9 @@
         }
     },
     "path": {
-        "ckpt_path": ".ckpt/gaot_graph/drivaernet/drivaernet.pt",
-        "loss_path": ".loss/gaot_graph/drivaernet/drivaernet.png",
-        "result_path": ".results/gaot_graph/drivaernet/drivaernet.png",
-        "database_path": ".database/gaot_graph/drivaernet/drivaernet.csv"
+        "ckpt_path": ".ckpt/gaot_graph/test/ratio.pt",
+        "loss_path": ".loss/gaot_graph/test/ratio.png",
+        "result_path": ".results/gaot_graph/test/ratio.png",
+        "database_path": ".database/gaot_graph/test/ratio.csv"
     }
 }
