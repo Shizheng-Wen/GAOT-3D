@@ -5,7 +5,7 @@ from tqdm import tqdm
 from torch_geometric.data import Data
 import torch
 
-def stack_pressure_data(base_path, order_file, max_num = None, pressure_key='p', output_nc='output.nc'):
+def stack_pressure_data(base_path, order_file, max_num = None, pressure_key='p', output_dir='output'):
     """
     Process VTK files in the order specified by order_file, stack coordinates and pressure,
     and save to a NetCDF file.
@@ -20,8 +20,8 @@ def stack_pressure_data(base_path, order_file, max_num = None, pressure_key='p',
         only processing top max_num lines in the order_file (default: "200") 
     pressure_key : str, optional
         Key for pressure in VTK point_data (default: pressure 'p').
-    output_nc : str, optional
-        Path for the output NetCDF file (default: 'output.nc').
+    output_dir : str, optional
+        Directory for the output file (default: 'output').
 
     Returns:
     --------
@@ -72,28 +72,28 @@ def stack_pressure_data(base_path, order_file, max_num = None, pressure_key='p',
         
         mesh = pv.read(file_path)
         coords = mesh.points # (sample_size, 3)
-        pressure = mesh.point_data[pressure_key] # (sample_size,)
+        x = mesh.point_data[pressure_key] # (sample_size,)
         data = Data(
             pos = torch.tensor(coords, dtype=torch.float32), # (sample_size, 3)
-            pressure = torch.tensor(pressure, dtype=torch.float32).unsqueeze(-1), # (sample_size, 1)
+            x = torch.tensor(x, dtype=torch.float32).unsqueeze(-1), # (sample_size, 3)
             )
         data.filename = f"{folder_name}_{number}"
-        processed_dir = os.path.join(os.path.dirname(output_nc), "processed_pyg")
+        processed_dir = output_dir
         os.makedirs(processed_dir, exist_ok=True)
         save_path = os.path.join(processed_dir, f"{folder_name}_{number}.pt")
         torch.save(data, save_path)
 
 if __name__ == '__main__':
-    base_path = "/cluster/work/math/camlab-data/drivaernet/PressureVTK"
+    base_path = "/cluster/work/math/camlab-data/drivaernet/WallShearStressVTK_Updated"
     order_file = "/cluster/work/math/camlab-data/drivaernet/order.txt"
-    pressure_key = "p"  
+    pressure_key = "wallShearStress"  
     max_num = None
-    output_nc = "/cluster/work/math/camlab-data/graphnpde/drivaernet/drivaernet_pressure_40k.nc"
+    output_dir = "/cluster/work/math/camlab-data/graphnpde/drivaernet/processed_pyg_stress"
 
     stack_pressure_data(
         base_path=base_path,
         order_file=order_file,
         max_num=max_num,
         pressure_key=pressure_key,
-        output_nc=output_nc
+        output_dir=output_dir
     )

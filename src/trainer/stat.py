@@ -109,7 +109,7 @@ class StaticTrainer3D(TrainerBase):
         if self.setup_config.rank != 0:
             return
         
-        processed_dir = os.path.join(dataset_config.base_path, "processed_pyg")
+        processed_dir = os.path.join(dataset_config.base_path, dataset_config.processed_folder)
         if not os.path.isdir(processed_dir):
              raise FileNotFoundError(f"Processed directory for update not found: {processed_dir}")
         
@@ -200,7 +200,7 @@ class StaticTrainer3D(TrainerBase):
         self.latent_token_size = self.model_config.args.latent_tokens
         data_root = dataset_config.base_path
         order_file_path = os.path.join(data_root, "order_use.txt")
-        processed_data_path = os.path.join(data_root, "processed_pyg")
+        processed_data_path = os.path.join(data_root, dataset_config.processed_folder)
 
         if not os.path.exists(processed_data_path):
             raise FileNotFoundError(f"Processed data directory does not exist: {processed_data_path}")
@@ -275,8 +275,8 @@ class StaticTrainer3D(TrainerBase):
             transform = composed_transform
         )
 
-        self.num_input_channels = 3
-        self.num_output_channels = 1
+        self.num_input_channels = test_ds[0].pos.shape[1]
+        self.num_output_channels = test_ds[0].x.shape[1]
         
         # --- Create DataLoaders ---
         if self.setup_config.train:

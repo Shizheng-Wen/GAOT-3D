@@ -52,6 +52,7 @@ class DatasetConfig:
     name: str = "CE-Gauss"
     metaname: str = "rigno-unstructured/CE-Gauss"
     base_path: str = "/cluster/work/math/camlab-data/rigno-unstructured/"
+    processed_folder: str = "processed_pyg"
     use_metadata_stats: bool = False
     sample_rate: float = 0.1
     use_sparse: bool = False                                                # Use full resolution for Poseidon Dataset
