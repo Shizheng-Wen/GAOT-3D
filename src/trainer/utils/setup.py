@@ -82,5 +82,5 @@ def load_ckpt(path, **kwargs):
                 new_state_dict[new_key] = state_dict[key]
             state_dict = new_state_dict
 
-        v.load_state_dict(state_dict, strict=False)
+        v.load_state_dict(state_dict, strict=True)
     return [i for i in kwargs.values()]

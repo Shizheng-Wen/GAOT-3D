@@ -101,7 +101,7 @@ class GroupQueryFlashAttention(nn.Module):
         #x = x.to(self.attn_dtype)
         if self.correction is not None:
             x = self.correction(c=condition, x=x)
-        
+            
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
@@ -120,7 +120,11 @@ class GroupQueryFlashAttention(nn.Module):
             q = self.rotary_emb.rotate_queries_or_keys(q)
             k = self.rotary_emb.rotate_queries_or_keys(k)
 
-        x = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.atten_dropout)
+        if self.training:
+            dp = self.atten_dropout
+        else:
+            dp = 0.0
+        x = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=dp)
 
         x = x.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
         x = self.o_proj(x)
