@@ -20,6 +20,6 @@ slurmjob/**
 # #!config/gaot/
 
 
-tests/preprocess/*
+tests
 tests/postprocess/*
 log/*
