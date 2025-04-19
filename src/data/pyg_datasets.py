@@ -65,7 +65,7 @@ class VTKMeshDataset(Dataset):
     @property
     def processed_dir(self) -> str:
         """Returns the path to the directory containing processed pyg files."""
-        return os.path.join(self.root, 'processed_pyg')
+        return os.path.join(self.root, self.dataset_config.processed_folder)
         
     @property
     def processed_file_names(self):
