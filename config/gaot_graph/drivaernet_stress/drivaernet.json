@@ -71,7 +71,8 @@
         "num_workers": 4,
         "shuffle": true,
         "metric_suite": "general",
-        "update_pt_files_with_edges": false
+        "update_pt_files_with_edges": false,
+        "use_rescale_new": true
     },
     "optimizer": {
         "name": "adamw",

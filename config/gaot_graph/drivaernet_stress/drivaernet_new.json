@@ -40,7 +40,7 @@
                 "use_attn_norm": true,
                 "use_ffn_norm": true,
                 "norm_eps": 1e-06,
-                "num_layers": 5,
+                "num_layers": 10,
                 "positional_embedding": "rope",
                 "use_long_range_skip": true,
                 "attn_config": {
@@ -60,24 +60,26 @@
         }
     },
     "dataset": {
-        "name": "drivaernet_fullpressure",
+        "name": "drivaernet_shearstress",
         "metaname": "gnpde-unstructured/drivaernet",
+        "processed_folder": "processed_pyg_stress",
         "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaernet/",
-        "train_size": 5817,
+        "train_size": 5819,
         "val_size": 1148,
         "test_size": 1154,
         "batch_size": 1,
         "num_workers": 4,
         "shuffle": true,
-        "metric_suite": "drivaernet",
-        "update_pt_files_with_edges": false
+        "metric_suite": "general",
+        "update_pt_files_with_edges": false,
+        "use_rescale_new": true
     },
     "optimizer": {
         "name": "adamw",
         "args": {
             "lr": 1e-3,
             "weight_decay": 1e-05,
-            "epoch": 200,
+            "epoch": 150,
             "loss_scale": 1.0,
             "eval_every_eps": 2,
             "scheduler": "mix",
@@ -87,9 +89,9 @@
         }
     },
     "path": {
-        "ckpt_path": ".ckpt/gaot_graph/drivaernet/drivaernet.pt",
-        "loss_path": ".loss/gaot_graph/drivaernet/drivaernet.png",
-        "result_path": ".results/gaot_graph/drivaernet/drivaernet.png",
-        "database_path": ".database/gaot_graph/drivaernet/drivaernet.csv"
+        "ckpt_path": ".ckpt/gaot_graph/drivaernet_stress/drivaernet_new.pt",
+        "loss_path": ".loss/gaot_graph/drivaernet_stress/drivaernet_new.png",
+        "result_path": ".results/gaot_graph/drivaernet_stress/drivaernet_new.png",
+        "database_path": ".database/gaot_graph/drivaernet_stress/drivaernet_new.csv"
     }
 }

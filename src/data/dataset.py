@@ -939,8 +939,8 @@ DATASET_METADATA = {
     num_variable_chunks=1,
     signed={'u': [False], 'c': [None]},
     names={'u': ['$p$'], 'c': [None]},
-    global_mean=[-93.419304],
-    global_std=[120.09386],
+    global_mean=[-94.5],
+    global_std=[117.25],
   ),
   'gnpde-unstructured/fracture': Metadata(
     periodic=False,

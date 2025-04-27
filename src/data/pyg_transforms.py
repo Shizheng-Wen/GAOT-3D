@@ -5,7 +5,7 @@ from torch_geometric.data import Data
 from torch_geometric.transforms import BaseTransform
 
 try: 
-    from src.utils.scale import rescale, normalize
+    from src.utils.scale import rescale, normalize, rescale_new
     EPSILON = 1e-10
 except ImportError:
     print("Error: Cannot import rescale/normalize from src.utils.scale")
@@ -32,6 +32,28 @@ class RescalePosition(BaseTransform):
     
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(lims={self.lims})'
+
+class RescalePositionNew(BaseTransform):
+    """Rescales node positions 'pos' to a specified range (default: [-1, 1])."""
+    def __init__(self, lims=(-1., 1.), phy_domain = ([-1.16, -1.2, 0.0], [4.21, 1.19, 1.77])):
+        self.lims = lims
+        self.phy_domain = phy_domain
+    
+    def __call__(self, data: Data) -> Data:
+        if hasattr(data, 'pos') and data.pos is not None:
+            # Apply rescale to data.pos
+            # The rescale function you provided finds min/max per call.
+            # Ensure this is the desired behavior (scale each graph independently)
+            # or if global min/max should be used (requires pre-calculation).
+            # Assuming per-graph scaling for now based on the function provided.
+            data.pos = rescale_new(data.pos, lims=self.lims, phys_domain=self.phy_domain)
+        else:
+            print("Warning: RescalePosition transform called but data has no 'pos' attribute.")
+        return data
+    
+    def __repr__(self) -> str:
+        return f'{self.__class__.__name__}(lims={self.lims})'
+
 
 class NormalizeFeatures(BaseTransform):
     """Normalizes node features 'x' using pre-computed mean and std."""

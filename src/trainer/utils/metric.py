@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from ...data.dataset import Metadata
 from typing import List, Dict, Union 
 
@@ -151,5 +152,52 @@ def aggregate_general_metrics(batch_metrics_list: List[Dict[str, float]]) -> Dic
         'Rel L2 Error (%)': agg_rel_l2,
         'Rel L1 Error (%)': agg_rel_l1,
     }
+
+
+# --- Drivaernet Metrics ---
+def compute_drivaernet_metric(gtr_ls: List[torch.Tensor], prd_ls: List[torch.Tensor], metadata:Metadata):
+    num_batches = len(gtr_ls)
+    MEAN = torch.tensor(metadata.global_mean)
+    STD = torch.tensor(metadata.global_std)
+    all_metrics = []
+    for idx in range(num_batches):
+        result = {
+            'MSE': 0,
+            'MAE': 0,
+            'RMSE': 0,
+            'Max_Error': 0,
+            'Rel_L2': 0,
+            'Rel_L1': 0
+        }
+
+        gtr = gtr_ls[idx]
+        prd = prd_ls[idx]
+        gtr_norm = (gtr - MEAN)/STD
+        prd_norm = (prd - MEAN)/STD
+        # Convert to numpy
+        gtr_norm = gtr_norm.cpu().numpy()
+        prd_norm = prd_norm.cpu().numpy()
+
+        mse = np.mean((gtr_norm - prd_norm) ** 2)
+        mae = np.mean(np.abs(gtr_norm - prd_norm))
+        rmse = np.sqrt(mse)
+        max_error = np.max(np.abs(gtr_norm - prd_norm))
+        rel_l2 = np.mean(np.linalg.norm(gtr_norm - prd_norm, axis=0) / 
+                        np.linalg.norm(gtr_norm, axis=0))
+        rel_l1 = np.mean(np.sum(np.abs(gtr_norm - prd_norm), axis=0) / 
+                        np.sum(np.abs(gtr_norm), axis=0))
+        result['MSE'] = mse
+        result['MAE'] = mae
+        result['RMSE'] = rmse
+        result['Max_Error'] = max_error
+        result['Rel_L2'] = rel_l2
+        result['Rel_L1'] = rel_l1
+        all_metrics.append(result)
+    agg_metrics = {}
+    for metric_name in all_metrics[0].keys():
+        agg_metrics[metric_name] = np.mean([m[metric_name] for m in all_metrics])
+        agg_metrics[f"{metric_name}_std"] = np.std([m[metric_name] for m in all_metrics])
+    
+    return agg_metrics
 
 

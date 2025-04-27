@@ -74,6 +74,7 @@ class DatasetConfig:
     metric_suite: str = "poseidon"                                          # Literal["poseidon", "general"]
     # for graph building
     update_pt_files_with_edges: bool = False                                # Flag to trigger edge computation/saving
+    use_rescale_new: bool = False
 
 @dataclass
 class OptimizerConfig:

@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .base import TrainerBase
-from .utils.metric import compute_batch_errors, compute_final_metric 
+from .utils.metric import compute_batch_errors, compute_final_metric, compute_drivaernet_metric
 from .utils.metric import compute_general_metrics_batch, aggregate_general_metrics
 from .utils.plot import plot_3d_comparison_pyvista, plot_3d_comparison_matplotlib
 from .utils.data_pairs import CustomDataset
@@ -21,12 +21,12 @@ from .utils.default_set import ModelConfig, merge_config
 
 from src.data.dataset import Metadata, DATASET_METADATA
 from src.data.pyg_datasets import VTKMeshDataset, EnrichedData
-from src.data.pyg_transforms import RescalePosition, NormalizeFeatures
+from src.data.pyg_transforms import RescalePosition, RescalePositionNew, NormalizeFeatures
 from src.model import init_model
 from tqdm import tqdm
 from src.model.layers.utils.magno_utils import NeighborSearch
 
-from src.utils.scale import rescale
+from src.utils.scale import rescale_new, rescale
 from src.utils.dataclass import shallow_asdict
 
 EPSILON = 1e-10
@@ -138,7 +138,6 @@ class StaticTrainer3D(TrainerBase):
         for filename in tqdm(filenames_to_process, desc="Updating .pt files"):
             fpath = os.path.join(processed_dir, filename)
             fpath_tmp = fpath + ".tmp"
-
             try:
                 data_old = torch.load(fpath, map_location='cpu')
                 data = EnrichedData(pos = data_old.pos, x=data_old.x)
@@ -146,8 +145,10 @@ class StaticTrainer3D(TrainerBase):
                      if attr not in ['pos', 'x']: 
                          setattr(data, attr, value)
                 data.num_latent_nodes = num_latent_tokens
-
-                phys_pos = rescale(data.pos.to(torch.float), (-1, 1)) # Rescale to [-1, 1], very important!
+                if dataset_config.use_rescale_new:
+                    phys_pos = rescale_new(data.pos.to(torch.float), (-1, 1), self.metadata.domain_x)
+                else:
+                    phys_pos = rescale(data.pos.to(torch.float), (-1, 1)) # Rescale to [-1, 1], very important!
                 num_physical_nodes = phys_pos.shape[0]
                 batch_idx_phys = torch.zeros(num_physical_nodes, dtype=torch.long)
                 batch_idx_latent = torch.zeros(num_latent_tokens, dtype=torch.long)
@@ -206,7 +207,7 @@ class StaticTrainer3D(TrainerBase):
             raise FileNotFoundError(f"Processed data directory does not exist: {processed_data_path}")
         if not os.path.exists(order_file_path):
             raise FileNotFoundError(f"Order file does not exist: {order_file_path}")
-        
+
         # --- Latent Tokens ---
         phy_domain = self.metadata.domain_x
         x_min, y_min, z_min = phy_domain[0]
@@ -218,7 +219,11 @@ class StaticTrainer3D(TrainerBase):
             indexing = "ij"
         )
         latent_queries = torch.stack(meshgrid, dim = -1).reshape(-1, 3)
-        self.latent_tokens = rescale(latent_queries, (-1, 1))
+        if dataset_config.use_rescale_new:
+            self.latent_tokens = rescale_new(latent_queries, (-1, 1), phy_domain)
+        else:
+            self.latent_tokens = rescale(latent_queries, (-1, 1))
+        
         print(f"Rank {self.setup_config.rank}: Dataset initialization finished.")
 
         # --- Pre-computation /Update Step ---
@@ -245,7 +250,11 @@ class StaticTrainer3D(TrainerBase):
         
 
         # --- Define Transforms ---
-        rescale_transform = RescalePosition(lims=(-1., 1.))
+        if dataset_config.use_rescale_new:
+            rescale_transform = RescalePositionNew(lims=(-1., 1.), phy_domain = phy_domain)
+        else:
+            rescale_transform = RescalePosition(lims=(-1., 1.))
+        
         normalize_transform = NormalizeFeatures(mean=self.u_mean, std=self.u_std)
         composed_transform = Compose([rescale_transform, normalize_transform])
 
@@ -437,13 +446,28 @@ class StaticTrainer3D(TrainerBase):
                 print("Warning: 'poseidon' metric suite requires adaptation for variable nodes per sample PyG structure. Skipping calculation.")
                 final_metric = float('nan')
                 self.config.datarow["relative error (direct)"] = final_metric # Store NaN
+            
+            if metric_suite == "drivaernet":
+                agg_metrics = compute_drivaernet_metric(
+                    gtr_ls = all_batch_preds_denorm,
+                    prd_ls = all_batch_targets_denorm,
+                    metadata =  self.metadata
+                )
+
+                print(f"--- Final Metrics (Drivaernet Suite - Full Dataset) ---")
+                print(f"MSE (x10^-2):       {agg_metrics['MSE'] * 100:.4f}")
+                print(f"MAE (x10^-1):       {agg_metrics['MAE'] * 10:.4f}")
+                print(f"RMSE:               {agg_metrics['RMSE']:.4f}")
+                print(f"Max_Error:          {agg_metrics['Max_Error']:.4f}")
+                print(f"Rel L2 Error (%):   {agg_metrics['Rel_L2']:.4f}")
+                print(f"Rel L1 Error (%):   {agg_metrics['Rel_L1']:.4f}")
 
             elif metric_suite == "general":
                 # Calculate general metrics on the full concatenated tensors
                 diff = full_preds - full_targets
-                mse = torch.mean(diff ** 2).item()/num_test_samples
-                mae = torch.mean(torch.abs(diff)).item()/num_test_samples
-                max_ae = torch.max(torch.abs(diff)).item()/num_test_samples
+                mse = torch.mean(diff ** 2).item()
+                mae = torch.mean(torch.abs(diff)).item()
+                max_ae = torch.max(torch.abs(diff)).item()
 
                 norm_diff_l2 = torch.linalg.norm(diff.float()) 
                 norm_gtr_l2 = torch.linalg.norm(full_targets.float())

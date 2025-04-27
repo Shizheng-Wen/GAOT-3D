@@ -4,8 +4,8 @@
         "device": "cuda:0",
         "dtype": "torch.float32",
         "trainer_name": "static3d",
-        "train": false,
-        "test": true,
+        "train": true,
+        "test": false,
         "ckpt": false,
         "use_variance_test": false,
         "distributed": true
@@ -60,17 +60,19 @@
         }
     },
     "dataset": {
-        "name": "drivaernet_fullpressure",
+        "name": "drivaernet_shearstress",
         "metaname": "gnpde-unstructured/drivaernet",
+        "processed_folder": "processed_pyg_stress",
         "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaernet/",
-        "train_size": 5817,
-        "val_size": 1148,
-        "test_size": 1154,
+        "train_size": 200,
+        "val_size": 10,
+        "test_size": 10,
         "batch_size": 1,
         "num_workers": 4,
         "shuffle": true,
-        "metric_suite": "drivaernet",
-        "update_pt_files_with_edges": false
+        "metric_suite": "general",
+        "update_pt_files_with_edges": true,
+        "use_rescale_new": true
     },
     "optimizer": {
         "name": "adamw",
@@ -87,9 +89,9 @@
         }
     },
     "path": {
-        "ckpt_path": ".ckpt/gaot_graph/drivaernet/drivaernet.pt",
-        "loss_path": ".loss/gaot_graph/drivaernet/drivaernet.png",
-        "result_path": ".results/gaot_graph/drivaernet/drivaernet.png",
-        "database_path": ".database/gaot_graph/drivaernet/drivaernet.csv"
+        "ckpt_path": ".ckpt/gaot_graph/stress_test/origin.pt",
+        "loss_path": ".loss/gaot_graph/stress_test/origin.png",
+        "result_path": ".results/gaot_graph/stress_test/origin.png",
+        "database_path": ".database/gaot_graph/stress_test/origin.csv"
     }
 }
