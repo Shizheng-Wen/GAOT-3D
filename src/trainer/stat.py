@@ -449,8 +449,8 @@ class StaticTrainer3D(TrainerBase):
             
             if metric_suite == "drivaernet":
                 agg_metrics = compute_drivaernet_metric(
-                    gtr_ls = all_batch_preds_denorm,
-                    prd_ls = all_batch_targets_denorm,
+                    gtr_ls = all_batch_targets_denorm,
+                    prd_ls = all_batch_preds_denorm,
                     metadata =  self.metadata
                 )
 

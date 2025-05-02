@@ -61,7 +61,7 @@
     },
     "dataset": {
         "name": "drivaernet_shearstress",
-        "metaname": "gnpde-unstructured/drivaernet",
+        "metaname": "gnpde-unstructured/drivaernet_shearstress",
         "processed_folder": "processed_pyg_stress",
         "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaernet/",
         "train_size": 5819,
@@ -70,7 +70,7 @@
         "batch_size": 1,
         "num_workers": 4,
         "shuffle": true,
-        "metric_suite": "general",
+        "metric_suite": "drivaernet",
         "update_pt_files_with_edges": false,
         "use_rescale_new": true
     },
