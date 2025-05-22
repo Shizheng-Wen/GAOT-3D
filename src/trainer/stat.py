@@ -1,33 +1,22 @@
 import os 
-import time
 import torch
-from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.loader import DataLoader as PyGDataLoader 
-from torch_geometric.data import Data 
 from torch_geometric.transforms import Compose
 import torch_geometric as pyg
 
-import xarray as xr
-import matplotlib.pyplot as plt
 import numpy as np
 
 from .base import TrainerBase
-from .utils.metric import compute_batch_errors, compute_final_metric, compute_drivaernet_metric
-from .utils.metric import compute_general_metrics_batch, aggregate_general_metrics
+from .utils.metric import compute_drivaernet_metric
 from .utils.plot import plot_3d_comparison_pyvista, plot_3d_comparison_matplotlib
-from .utils.data_pairs import CustomDataset
-from .utils.default_set import ModelConfig, merge_config
 
-from src.data.dataset import Metadata, DATASET_METADATA
 from src.data.pyg_datasets import VTKMeshDataset, EnrichedData
 from src.data.pyg_transforms import RescalePosition, RescalePositionNew, NormalizeFeatures
 from src.model import init_model
 from tqdm import tqdm
-from src.model.layers.utils.magno_utils import NeighborSearch
 
 from src.utils.scale import rescale_new, rescale
-from src.utils.dataclass import shallow_asdict
 
 EPSILON = 1e-10
 
@@ -387,15 +376,11 @@ class StaticTrainer3D(TrainerBase):
         self.model.eval()
         metric_suite = self.dataset_config.metric_suite
         
-        all_poseidon_batch_errors = []
-        all_general_batch_metrics_dicts = [] 
-
         # Store data needed for metric calculation and plotting
         all_batch_targets_denorm = []
         all_batch_preds_denorm = []
         plot_coords, plot_gtr, plot_prd = None, None, None # For plotting first sample
         
-        num_test_samples = len(self.test_loader.dataset)
         print(f"Starting testing with metric suite: '{metric_suite}'")
 
         with torch.no_grad():
@@ -438,11 +423,6 @@ class StaticTrainer3D(TrainerBase):
 
             # --- Calculate Metrics ---
             if metric_suite == "poseidon":
-                # Adapting Poseidon metric requires metadata and careful handling of batch structure.
-                # We need to reshape full_targets/full_preds back into [NumSamples, 1, NumNodesPerSample, C]
-                # This is non-trivial because NumNodesPerSample varies.
-                # Compute_batch_errors expects [B, T, S, V].
-                # We will skip the actual calculation here as it needs significant adaptation.
                 print("Warning: 'poseidon' metric suite requires adaptation for variable nodes per sample PyG structure. Skipping calculation.")
                 final_metric = float('nan')
                 self.config.datarow["relative error (direct)"] = final_metric # Store NaN
@@ -516,4 +496,4 @@ class StaticTrainer3D(TrainerBase):
                 print(f"Error during 3D plotting of first test sample: {plot_err}")
 
         elif self.setup_config.distributed:
-             pass # Handle non-rank 0 processes
+             pass 

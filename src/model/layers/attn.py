@@ -14,35 +14,34 @@ from ...utils.dataclass import shallow_asdict
 
 @dataclass
 class AttentionConfig:
-    hidden_size:int = 256 # should be multiple of num_heads
-    num_heads:int = 8
-    num_kv_heads:int = 8
-    use_conditional_norm:bool = False
-    cond_norm_hidden_size:int = 4
-    atten_dropout:float = 0.1
-    positional_embedding: str = 'absolute'       # Don't need to designate, it will follow the values in the TransformerConfig
-    H: Optional[int] = None  # Add H with a default value
-    W: Optional[int] = None  # Add W with a default value
+    hidden_size:int = 256                   # Hidden size of the attention module (should be a multiple of num_heads)
+    num_heads:int = 8                       # Number of attention heads (for multi-head attention)
+    num_kv_heads:int = 8                    # Number of attention heads for Key and Value (Grouped Query Attention)
+    use_conditional_norm:bool = False       # Whether to use time conditional normalization
+    cond_norm_hidden_size:int = 4           # Hidden size for the time conditional normalization
+    atten_dropout:float = 0.1               # Dropout probability in the attention module
+    positional_embedding: str = 'absolute'  # Type of positional embedding to use, supports ['absolute', 'rope']
+    H: Optional[int] = None                 # Add H with a default value (no need to designate)
+    W: Optional[int] = None                 # Add W with a default value (no need to designate)
 
 @dataclass 
 class FFNConfig:
-    hidden_size:int = 256
-    use_conditional_norm:bool = False
-    cond_norm_hidden_size:int = 4
+    hidden_size:int = 1024                  # Hidden size of the feedforward network (4 times the hidden size of the attention module)    
+    use_conditional_norm:bool = False       # Whether to use time conditional normalization
+    cond_norm_hidden_size:int = 4           # Hidden size for the time conditional normalization
 
 @dataclass
 class TransformerConfig:
-    patch_size: int = 8
-    hidden_size:int = 256                                       # needs to be aligned with values in the Attentionconfig.hidden_size
-    use_attn_norm: bool = True
-    use_ffn_norm: bool = True
-    norm_eps: float = 1e-6
-    num_layers: int = 3
-    axis_concatenated: bool = False
-    positional_embedding: str = 'absolute' # decided whether to use concatenated axis features for attention
-    use_long_range_skip: bool = True #Set it to True for UViT processor
-    attn_config: AttentionConfig = field(default_factory=AttentionConfig)
-    ffn_config: FFNConfig = field(default_factory=FFNConfig)
+    patch_size: int = 8                              # Size of the patches for the structured latent tokens
+    hidden_size:int = 256                            # Hidden size of the transformer (align with attention module)
+    use_attn_norm: bool = True                       # Whether to use normalization in the attention module
+    use_ffn_norm: bool = True                        # Whether to use normalization in the feedforward network
+    norm_eps: float = 1e-6                           # Epsilon value for layer normalization
+    num_layers: int = 3                              # Number of transformer blocks
+    positional_embedding: str = 'absolute'           # decided whether to use concatenated axis features for attention
+    use_long_range_skip: bool = True                 # Set it to True for UViT processor
+    attn_config: AttentionConfig = field(default_factory=AttentionConfig)   # Configuration for the attention sub-module
+    ffn_config: FFNConfig = field(default_factory=FFNConfig)                # Configuration for the feedforward network sub-module
     
 
 """
