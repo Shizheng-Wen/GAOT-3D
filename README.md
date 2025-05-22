@@ -1,10 +1,13 @@
 # :goat: GAOT-3D: Geometry-Aware Operator Transformer (3D Implementation)
 
-This repository provides the 3D implementation of the Geometry-Aware Operator Transformer (GAOT). This work is an extension of the paper "Geometry Aware Operator Transformer as an efficient and accurate neural surrogate for PDEs on arbitrary domains".
+This repository provides the 3D implementation of the Geometry-Aware Operator Transformer (GAOT). 
 
-For the 2D version of GAOT, please refer to the main repository: [GAOT](https://github.com/camlab-ethz/GAOT)
+Paper: **"Geometry Aware Operator Transformer as an efficient and accurate neural surrogate for PDEs on arbitrary domains".**
+
+For the 2D version of GAOT, please refer to the main repository: [**GAOT**](https://github.com/camlab-ethz/GAOT)
 
 **Branches:**
+
 * `main`: Implements GAOT-3D with full-precision learning.
 * `neurfield`: Explores an implementation using a neural field approach.
 
@@ -21,20 +24,22 @@ For the 2D version of GAOT, please refer to the main repository: [GAOT](https://
 | RegDGCNN          | 8.2900           | 1.6100                | 13.8200     | 3.6400           |
 | GAOT (NeurField)  | 12.0786          | 1.7826                | 22.9160     | 2.5099           |
 
-<p align="left">
+<p align="center">
   <img src="assets/pressure_comparison.png" alt="Surface Pressure" width="600"/>
   <br/>
   <em>Figure 1: Visualization of test sample N_S_WWS_WM_172 for the surface pressure.</em>
 </p>
 
+
 ## Installation
 
 1.  **Create and activate a virtual environment (recommended):**
+    
     ```bash
     python -m venv venv-gaot3d
     source venv-gaot3d/bin/activate
     ```
-
+    
 2.  **Install dependencies:**
     ```bash
     pip install -r requirements.txt
@@ -108,27 +113,33 @@ python main.py --config config/examples/drivaernet/pressure/pressure.json
 ```
 
 To run all configuration files within a specific folder:
-python main.py --folder [path_to_your_config_folder]
-Command-line Options for main.py:
-* --config <path>: Path to a single configuration file.
-* --folder <path>: Path to a folder containing multiple configuration files.
-* --debug: Run in debug mode (may affect multiprocessing).
-* --num_works_per_device <int>: Number of parallel workers per device (default: 10).
-* --visible_devices <int ...>: Specify which CUDA devices to use (e.g., --visible_devices 0 1).
 
-During training, checkpoints, loss curves, visualizations, and a CSV database of metrics will be saved to the directories specified in the path section of your configuration file.
+```
+python main.py --folder [path_to_your_config_folder]
+```
+
+
+Command-line Options for `main.py`:
+
+* `--config <path>`: Path to a single configuration file.
+* `--folder <path>`: Path to a folder containing multiple configuration files.
+* `--debug`: Run in debug mode (may affect multiprocessing).
+* `--num_works_per_device <int>`: Number of parallel workers per device (default: 10).
+* `--visible_devices <int ...>`: Specify which CUDA devices to use (e.g., --visible_devices 0 1).
+
+During training, checkpoints, loss curves, visualizations, and a CSV database of metrics will be saved to the directories specified in the `path` section of your configuration file.
 
 ### Inference
 To run inference using a trained model:
 1. Modify your configuration file:
-* Set setup.train: false.
-* Set setup.test: true.
-* Ensure path.ckpt_path points to the desired model checkpoint file (.pt).
+   * Set `setup.train: false`.
+   * Set `setup.test: true`.
+   * Ensure `path.ckpt_path` points to the desired model checkpoint file (`.pt`).
 
-2. Run main.py with the updated configuration:
-```bash
-python main.py --config [path_to_your_config_file.json_or_toml]
-```
+1. Run `main.py` with the updated configuration:
+    ```bash
+    python main.py --config [path_to_your_config_file.json_or_toml]
+    ```
 ## Project Structure
 ```
 GAOT-3D/
