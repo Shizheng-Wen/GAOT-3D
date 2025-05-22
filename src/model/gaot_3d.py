@@ -5,9 +5,10 @@ from typing import Optional
 from dataclasses import dataclass, field
 
 from .layers.attn import Transformer, TransformerConfig
-from .layers.magno import IntegralTransform, MAGNOConfig
+from .layers.magno import MAGNOConfig
 from .layers.magno import GNOEncoder, GNODecoder
-from .layers.utils.magno_utils import NeighborSearch
+
+from torch_geometric.data import Batch
 
 
 class GAOT3D(nn.Module):
@@ -20,26 +21,39 @@ class GAOT3D(nn.Module):
                  output_size: int,
                  magno_config: MAGNOConfig = MAGNOConfig(),
                  attn_config: TransformerConfig = TransformerConfig(),
-                 latent_tokens: tuple = (64, 64, 64)):
+                 latent_tokens: tuple = (32, 32, 32),
+                 norm_domin: list = [(-1, -1, -1), (1, 1, 1)]):
         nn.Module.__init__(self)
         self.input_size = input_size
         self.output_size = output_size
         self.node_latent_size = magno_config.lifting_channels 
         self.patch_size = attn_config.patch_size
-        self.D = latent_tokens[0]
-        self.H = latent_tokens[1]
-        self.W = latent_tokens[2]
+        self.D, self.H, self.W = latent_tokens
+        self.num_latent_tokens = self.D * self.H * self.W
+        self.coord_dim = magno_config.gno_coord_dim
 
+        # --- Create and register latent_tokens ---
+        x_min, y_min, z_min = norm_domin[0]
+        x_max, y_max, z_max = norm_domin[1]
+        meshgrid = torch.meshgrid(
+            torch.linspace(x_min, x_max, self.D),
+            torch.linspace(y_min, y_max, self.H),
+            torch.linspace(z_min, z_max, self.W),
+            indexing="ij"
+        )
 
+        internal_latent_tokens = torch.stack(meshgrid, dim=-1).reshape(-1, self.coord_dim)
+        self.register_buffer('latent_tokens', internal_latent_tokens)
+        # --- End latent_tokens creation ---
         # Initialize encoder, processor, and decoder
-        self.encoder = self.init_encoder(input_size, magno_config)
+        self.encoder = self.init_encoder(input_size, self.node_latent_size, magno_config)
         self.processor = self.init_processor(self.node_latent_size, attn_config)
-        self.decoder = self.init_decoder(output_size, magno_config)
+        self.decoder = self.init_decoder(self.node_latent_size, output_size, magno_config)
     
-    def init_encoder(self, input_size, magno_config):
+    def init_encoder(self, input_size, node_latent_size, magno_config):
         return GNOEncoder(
             in_channels = input_size,
-            out_channels = self.node_latent_size,
+            out_channels = node_latent_size,
             gno_config = magno_config
         )
     
@@ -49,10 +63,7 @@ class GAOT3D(nn.Module):
                                       self.patch_size * self.patch_size * self.patch_size * self.node_latent_size)
     
         self.positional_embedding_name = config.positional_embedding
-        self.positions = self.get_patch_positions()
-        if self.positional_embedding_name == 'absolute':
-            pos_emb = self.compute_absolute_embeddings(self.positions, self.patch_size * self.patch_size * self.patch_size * self.node_latent_size)
-            self.register_buffer('positional_embeddings', pos_emb)
+        self.positions = self._get_patch_positions()
 
         setattr(config.attn_config, 'D', self.D)
         setattr(config.attn_config, 'H', self.H)
@@ -64,21 +75,91 @@ class GAOT3D(nn.Module):
             config=config
         )
 
-    def init_decoder(self, output_size, magno_config):
+    def init_decoder(self, node_latent_size, output_size, magno_config):
         # Initialize the GNO decoder
         return GNODecoder(
-            in_channels=self.node_latent_size,
+            in_channels=node_latent_size,
             out_channels=output_size,
             gno_config=magno_config
         )
 
-    def encode(self, pndata: torch.Tensor, x_coord: torch.Tensor, token_coord: torch.Tensor, encoder_nbrs: list) -> torch.Tensor:
+    def _get_patch_positions(self):
+        """
+        Generate positional embeddings for the patches.
+        """
+        num_patches_D = self.D // self.patch_size
+        num_patches_H = self.H // self.patch_size
+        num_patches_W = self.W // self.patch_size
+        positions = torch.stack(torch.meshgrid(
+                torch.arange(num_patches_D, dtype=torch.float32),
+                torch.arange(num_patches_H, dtype=torch.float32),
+                torch.arange(num_patches_W, dtype=torch.float32),
+                indexing='ij'
+            ), dim=-1).reshape(-1, 3)
+
+        return positions
+
+    def _compute_absolute_embeddings(self, positions, embed_dim):
+        """
+        Compute absolute positional embeddings based on geometric coordinates.
+
+        Args:
+            positions (torch.Tensor): Tensor of shape [num_tokens, dims] representing the coordinates of each token.
+            embed_dim (int): The desired embedding dimension. Assumed to be even for simplicity.
+
+        Returns:
+            torch.Tensor: Positional embedding tensor of shape [num_tokens, embed_dim].
+        """
+        # Extract the number of tokens and dimensions from the input tensor
+        num_tokens, dims = positions.shape
+
+        # Compute the frequencies, one for each pair of embedding dimensions
+        # omega_k = 1 / 10000^(2k / embed_dim) for k = 0, 1, ..., embed_dim//2 - 1
+        freq = 1 / 10000 ** (2 * torch.arange(0, embed_dim//2, dtype=torch.float32, device=positions.device) / embed_dim)
+
+        # Expand dimensions for broadcasting: positions becomes [num_tokens, dims, 1]
+        pos_expanded = positions[:, :, None]
+        # freq becomes [1, 1, embed_dim//2]
+        freq_expanded = freq[None, None, :]
+
+        # Compute angles for all tokens, dimensions, and frequencies
+        # angles[i, d, k] = positions[i, d] * freq[k]
+        angles = pos_expanded * freq_expanded  # Shape: [num_tokens, dims, embed_dim//2]
+
+        # Compute sine and cosine values for all angles
+        sin_values = torch.sin(angles)  # Shape: [num_tokens, dims, embed_dim//2]
+        cos_values = torch.cos(angles)  # Shape: [num_tokens, dims, embed_dim//2]
+
+        # Sum the sine and cosine values across all dimensions
+        sum_sin = torch.sum(sin_values, dim=1)  # Shape: [num_tokens, embed_dim//2]
+        sum_cos = torch.sum(cos_values, dim=1)  # Shape: [num_tokens, embed_dim//2]
+
+        # Initialize the positional embedding tensor
+        PE = torch.zeros(num_tokens, embed_dim, device=positions.device)
+
+        # Assign summed sine values to even indices and cosine values to odd indices
+        PE[:, 0::2] = sum_sin  # Even positions
+        PE[:, 1::2] = sum_cos  # Odd positions
+
+        return PE
+
+    def encode(self, batch: Batch, token: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        batch: Batch
+            The input batch containing the data
+        token: Optional[torch.Tensor]
+            ND Tensor of shape [batch_size, n_token_nodes, n_dim]
+        Returns
+        ------- 
+        torch.Tensor
+            The regional node data of shape [..., n_regional_nodes, node_latent_size]
+        """
         # Apply GNO encoder
         encoded = self.encoder(
-            pndata = pndata,
-            x_coord= x_coord,
-            token_coord = token_coord,
-            encoder_nbrs = encoder_nbrs
+            batch = batch,
+            latent_tokens = token
         )
         return encoded
 
@@ -123,9 +204,8 @@ class GAOT3D(nn.Module):
         # Apply Vision Transformer
         rndata = self.patch_linear(rndata)
         pos = self.positions.to(rndata.device)  # shape [num_patches, 3]
-
         if self.positional_embedding_name == 'absolute':
-            pos_emb = self.compute_absolute_embeddings(pos, P * P * P * self.node_latent_size)
+            pos_emb = self._compute_absolute_embeddings(pos, P * P * P * self.node_latent_size)
             rndata = rndata + pos_emb
             relative_positions = None
     
@@ -141,88 +221,112 @@ class GAOT3D(nn.Module):
 
         return rndata
 
-    def decode(self, rndata: torch.Tensor, x_coord: torch.Tensor, token_coord: torch.Tensor, decoder_nbrs: list) -> torch.Tensor:
-        # Apply GNO decoder
-        decoded = self.decoder(
-            rndata = rndata,
-            x_coord = x_coord,
-            token_coord = token_coord,
-            decoder_nbrs = decoder_nbrs)
-        return decoded
-
-    def forward(self,
-                pndata: Optional[torch.Tensor] = None,
-                xcoord: Optional[torch.Tensor] = None,
-                tokens: Optional[torch.Tensor] = None,
-                condition: Optional[float] = None,
-                encoder_nbrs: Optional[list] = None,
-                decoder_nbrs: Optional[list] = None
-                ) -> torch.Tensor:
+    def decode(self, rndata: Optional[torch.Tensor] = None,
+                batch: Batch = None,
+                token: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
-        Forward pass for GIVI model.
-
         Parameters
         ----------
-        pndata: Optional[torch.Tensor]
-            ND Tensor of shape [batch_size, n_physical_nodes, input_size]
-        xcoord: Optional[torch.Tensor]
-            ND Tensor of shape [batch_size, n_physical_nodes, n_dim]
-        tokens: Optional[torch.Tensor]
+        rndata: Optional[torch.Tensor]
+            ND Tensor of shape [..., n_regional_nodes, node_latent_size]
+        batch: Batch
+            The input batch containing the data
+        token: Optional[torch.Tensor]
             ND Tensor of shape [batch_size, n_token_nodes, n_dim]
-        condition: Optional[float]
-            The condition of the model
-
         Returns
         -------
         torch.Tensor
             The output tensor of shape [batch_size, n_physical_nodes, output_size]
         """
+        decoded = self.decoder(
+            rndata_batched = rndata,
+            batch = batch,
+            latent_tokens = token
+        )
+        return decoded
+
+    def forward(self,
+                batch: Batch,
+                tokens_pos: Optional[torch.Tensor] = None,
+                tokens_batch_idx: Optional[torch.Tensor] = None,
+                query_coord_pos: Optional[torch.Tensor] = None,
+                query_coord_batch_idx: Optional[torch.Tensor] = None,
+                condition: Optional[float] = None
+                ) -> torch.Tensor:
+        """
+        Forward pass for GAOT3D model using PyG Batch.
+
+        Args:
+            batch (Batch): Input PyG Batch (contains batch.pos, batch.x, batch.batch).
+            tokens_pos (Tensor, optional): External latent token coordinates [TotalLatentNodes, D].
+                                           If None, uses internal self.latent_tokens.
+            tokens_batch_idx (Tensor, optional): Batch index for external tokens [TotalLatentNodes].
+                                                 Required if tokens_pos is provided.
+            query_coord_pos (Tensor, optional): External query coordinates for decoder [TotalQueryNodes, D].
+                                                 If None, uses batch.pos from input batch.
+            query_coord_batch_idx (Tensor, optional): Batch index for external query coords [TotalQueryNodes].
+                                                       Required if query_coord_pos is provided.
+            condition (float, optional): Condition parameter for processor.
+
+        Returns:
+            Tensor: Output tensor on physical/query nodes [TotalQueryNodes, OutputChannels].
+        """
+        num_graphs = batch.num_graphs
+        device = batch.pos.device
+        
+        # --- Determine Latent Tokens ---
+        if tokens_pos is None:
+            assert tokens_batch_idx is None, "tokens_batch_idx should be None if tokens_pos is None"
+            latent_tokens_batched = self.latent_tokens.to(device).repeat(num_graphs, 1)
+            batch_idx_latent = torch.arange(num_graphs, device=device).repeat_interleave(self.num_latent_tokens)
+        else:
+            if tokens_batch_idx is None:
+                latent_tokens_batched = tokens_pos.to(device).repeat(num_graphs, 1)
+                batch_idx_latent = torch.arange(num_graphs, device=device).repeat_interleave(self.num_latent_tokens)
+            else:
+                assert tokens_pos.shape[0] == tokens_batch_idx.shape[0], "tokens_pos and tokens_batch_idx must have same length"
+                assert tokens_batch_idx.max() == num_graphs - 1, "tokens_batch_idx does not match batch size"
+                latent_tokens_batched = tokens_pos.to(device)
+                batch_idx_latent = tokens_batch_idx.to(device)
+        
+        # -- End Determine Latent Tokens ---
+
+        # --- Determine Decoder Query Coordinates ---
+        if query_coord_pos is None:
+            phys_pos_query_eff = batch.pos # [TotalPhysicalNodes, D]
+            batch_idx_phys_query_eff = batch.batch # [TotalPhysicalNodes]
+        else:
+            assert query_coord_batch_idx is not None, "query_coord_batch_idx is required if query_coord_pos is provided"
+            assert query_coord_pos.shape[0] == query_coord_batch_idx.shape[0], "query_coord_pos and query_coord_batch_idx must have same length"
+            assert query_coord_batch_idx.max() == num_graphs - 1, "query_coord_batch_idx does not match batch size"
+            phys_pos_query_eff = query_coord_pos.to(device)
+            batch_idx_phys_query_eff = query_coord_batch_idx.to(device)
+
         # Encode: Map physical nodes to regional nodes using MAGNO Encoder
-        rndata = self.encode(
-            pndata          =   pndata, 
-            x_coord         =   xcoord, 
-            token_coord     =   tokens,
-            encoder_nbrs    =   encoder_nbrs)
+        rndata = self.encoder(
+             batch=batch, # Contains phys_pos, phys_feat, batch_idx_phys
+             latent_tokens_pos=latent_tokens_batched,
+             latent_tokens_batch_idx=batch_idx_latent
+             ) # Output shape: [B, M, C_lifted]
 
         # Process: Apply Vision Transformer on the regional nodes
-        rndata = self.process(
-            rndata      =   rndata, 
-            condition   =   condition)
+        # Input shape: [B, M, C_lifted]
+        rndata_proc = self.process(
+            rndata=rndata,
+            condition=condition) # Output shape: [B, M, C_lifted] 
+
+        # Flatten processor output for Decoder: [B, M, C_lifted] -> [TotalLatentNodes, C_lifted]
+        rndata_proc_flat = rndata_proc.view(-1, self.node_latent_size) # Use self.node_latent_size
 
         # Decode: Map regional nodes back to physical nodes using MAGNO Decoder
-        output = self.decode(
-            rndata      =   rndata, 
-            x_coord     =   xcoord,
-            token_coord =   tokens, 
-            decoder_nbrs=   decoder_nbrs)
+        # Output shape: [TotalQueryNodes, OutputChannels]
+        output = self.decoder(
+            rndata_flat=rndata_proc_flat,
+            phys_pos_query=phys_pos_query_eff,
+            batch_idx_phys_query=batch_idx_phys_query_eff,
+            latent_tokens_pos=latent_tokens_batched,
+            latent_tokens_batch_idx=batch_idx_latent,
+            batch = batch
+            )
 
         return output
-
-    def get_patch_positions(self):
-        """
-        Generate positional embeddings for the patches.
-        """
-        num_patches_D = self.D // self.patch_size
-        num_patches_H = self.H // self.patch_size
-        num_patches_W = self.W // self.patch_size
-        positions = torch.stack(torch.meshgrid(
-                torch.arange(num_patches_D, dtype=torch.float32),
-                torch.arange(num_patches_H, dtype=torch.float32),
-                torch.arange(num_patches_W, dtype=torch.float32),
-                indexing='ij'
-            ), dim=-1).reshape(-1, 3)
-
-        return positions
-
-    def compute_absolute_embeddings(self, positions, embed_dim):
-        """
-        Compute RoPE embeddings for the given positions.
-        """
-        num_pos_dims = positions.size(1)
-        dim_touse = embed_dim // (2 * num_pos_dims)
-        freq_seq = torch.arange(dim_touse, dtype=torch.float32, device=positions.device)
-        inv_freq = 1.0 / (10000 ** (freq_seq / dim_touse))
-        sinusoid_inp = positions[:, :, None] * inv_freq[None, None, :]
-        pos_emb = torch.cat([torch.sin(sinusoid_inp), torch.cos(sinusoid_inp)], dim=-1)
-        pos_emb = pos_emb.view(positions.size(0), -1)
-        return pos_emb

@@ -52,6 +52,7 @@ class DatasetConfig:
     name: str = "CE-Gauss"
     metaname: str = "rigno-unstructured/CE-Gauss"
     base_path: str = "/cluster/work/math/camlab-data/rigno-unstructured/"
+    processed_folder: str = "processed_pyg"
     use_metadata_stats: bool = False
     sample_rate: float = 0.1
     use_sparse: bool = False                                                # Use full resolution for Poseidon Dataset
@@ -71,6 +72,9 @@ class DatasetConfig:
     names: List[str] = field(default_factory=lambda: ["Wave-Layer"])
     metanames: List[str] = field(default_factory=lambda: ["rigno-unstructured/Wave-Layer"])
     metric_suite: str = "poseidon"                                          # Literal["poseidon", "general"]
+    # for graph building
+    update_pt_files_with_edges: bool = False                                # Flag to trigger edge computation/saving
+    use_rescale_new: bool = False
 
 @dataclass
 class OptimizerConfig:

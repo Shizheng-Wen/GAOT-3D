@@ -3,23 +3,30 @@ import time
 import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from torch_geometric.loader import DataLoader as PyGDataLoader 
+from torch_geometric.data import Data 
+from torch_geometric.transforms import Compose
+import torch_geometric as pyg
 
 import xarray as xr
 import matplotlib.pyplot as plt
 import numpy as np
 
 from .base import TrainerBase
-from .utils.metric import compute_batch_errors, compute_final_metric 
+from .utils.metric import compute_batch_errors, compute_final_metric, compute_drivaernet_metric
 from .utils.metric import compute_general_metrics_batch, aggregate_general_metrics
 from .utils.plot import plot_3d_comparison_pyvista, plot_3d_comparison_matplotlib
 from .utils.data_pairs import CustomDataset
-
+from .utils.default_set import ModelConfig, merge_config
 
 from src.data.dataset import Metadata, DATASET_METADATA
+from src.data.pyg_datasets import VTKMeshDataset, EnrichedData
+from src.data.pyg_transforms import RescalePosition, RescalePositionNew, NormalizeFeatures
 from src.model import init_model
+from tqdm import tqdm
 from src.model.layers.utils.magno_utils import NeighborSearch
 
-from src.utils.scale import rescale
+from src.utils.scale import rescale_new, rescale
 from src.utils.dataclass import shallow_asdict
 
 EPSILON = 1e-10
@@ -43,99 +50,165 @@ class StaticTrainer3D(TrainerBase):
 
     def __init__(self, args):
         super().__init__(args)
-   
-    def init_dataset(self, dataset_config):
-        self.latent_token_size = self.model_config.args.latent_tokens
-        base_path = dataset_config.base_path
-        dataset_name = dataset_config.name
-        dataset_path = os.path.join(base_path, f"{dataset_name}.nc")
 
-        with xr.open_dataset(dataset_path) as ds:
-            u_array = ds[self.metadata.group_u].values  # Shape: [num_samples, num_timesteps, num_nodes, num_channels]
-            if self.metadata.group_c is not None:
-                c_array = ds[self.metadata.group_c].values  # Shape: [num_samples, num_timesteps, num_nodes, num_channels_c]
-            else:
-                c_array = None
-            if self.metadata.group_x is not None:
-                x_array = ds[self.metadata.group_x].values # Shape: [num_samples, num_timesteps, num_nodes, num_dims]
+    def _calculate_or_load_stats(self, dataset_config, order_file_path, data_root):
+        """Calculates or loads normalization statistics."""
+        stats_file = os.path.join(data_root, f"{dataset_config.name}_norm_stats.pt")
+
+        if os.path.exists(stats_file) and not getattr(dataset_config, 'force_recompute_stats', False):
+            print(f"Loading pre-calculated normalization stats from {stats_file}")
+            stats = torch.load(stats_file)
+            self.u_mean = stats['mean'].to(self.dtype)
+            self.u_std = stats['std'].to(self.dtype)
+        else:
+            print("Calculating normalization statistics from training set...")
+            # Need to instantiate a temporary dataset for the training split *without* normalization
+            # to iterate and compute stats.
+            temp_train_dataset = VTKMeshDataset(
+                root=dataset_config.base_path,
+                order_file=order_file_path,
+                dataset_config=dataset_config,
+                split='train',
+                transform=RescalePosition() # Apply rescaling even when calculating stats
+            )
+            # Use a simple loader to iterate
+            temp_loader = PyGDataLoader(temp_train_dataset, batch_size=dataset_config.batch_size, shuffle=False, num_workers=4) # Use 0 workers for simplicity here
+
+            all_x = []
+            for batch in tqdm(temp_loader, desc="Calculating Stats"):
+                # Collect all 'x' features from the training set
+                # Be mindful of memory for large datasets!
+                all_x.append(batch.x.cpu()) # Move to CPU to avoid GPU memory buildup
+
+            if not all_x:
+                 raise ValueError("No data found in training set to calculate statistics.")
+
+            full_x_tensor = torch.cat(all_x, dim=0)
+            # Calculate mean/std over all nodes/samples in training set (dimension 0)
+            # Assuming features are [TotalNodes, NumFeatures]
             
+            self.u_mean = torch.mean(full_x_tensor, dim=0, dtype=self.dtype)
+            self.u_std = torch.std(full_x_tensor, dim=0).to(self.dtype)
+
+            print(f"Calculated - Mean: {self.u_mean}, Std: {self.u_std}")
+            # Save calculated stats
+            print(f"Saving normalization stats to {stats_file}")
+            os.makedirs(os.path.dirname(stats_file), exist_ok=True)
+            torch.save({'mean': self.u_mean, 'std': self.u_std}, stats_file)
+        # Ensure stats are available and have correct type
+        if self.u_mean is None or self.u_std is None:
+             raise RuntimeError("Normalization mean/std could not be calculated or loaded.")
+        self.u_mean = self.u_mean.to(self.dtype)
+        self.u_std = self.u_std.to(self.dtype)
+   
+    def _update_pt_files_with_edges(self, dataset_config, order_file_path, gno_config):
+        """
+        Iterates through processed .pt files, computes edges (and optionally counts),
+        and saves them back to the files. Runs ONLY on rank 0 in DDP.
+        """
+        if self.setup_config.rank != 0:
+            return
         
-        active_vars = self.metadata.active_variables
-        u_array = u_array[..., active_vars]
-        self.num_input_channels = x_array.shape[-1]
-        self.num_output_channels = u_array.shape[-1]
+        processed_dir = os.path.join(dataset_config.base_path, dataset_config.processed_folder)
+        if not os.path.isdir(processed_dir):
+             raise FileNotFoundError(f"Processed directory for update not found: {processed_dir}")
         
-        # Compute dataset sizes
-        total_samples = u_array.shape[0]
+        with open(order_file_path, 'r') as f:
+            all_filenames_base = [line.strip() for line in f if line.strip()]
+        total_samples = len(all_filenames_base)
         train_size = dataset_config.train_size
         val_size = dataset_config.val_size
+        # Test size calculation depends on how split was done previously
         test_size = dataset_config.test_size
-        assert train_size + val_size + test_size <= total_samples, "Sum of train, val, and test sizes exceeds total samples"
-        assert u_array.shape[1] == 1, "Expected num_timesteps to be 1 for static datasets."
-    
-        if dataset_config.rand_dataset:
-            indices = np.random.permutation(len(u_array))
-        else:
-            indices = np.arange(len(u_array))
-        
+        indices = np.arange(total_samples) 
+        # Note: rand_dataset shuffling is NOT applied here, we process based on original order file names
         train_indices = indices[:train_size]
-        val_indices = indices[train_size:train_size+val_size]
-        test_indices = indices[-test_size:]
+        val_indices = indices[train_size : train_size + val_size]
+        test_indices = indices[-test_size:] 
+        relevant_indices = np.concatenate([train_indices, val_indices, test_indices])
+        filenames_to_process = [f"{all_filenames_base[i]}.pt" for i in relevant_indices]
 
-        # Split data into train, val, test
-        u_train = u_array[train_indices]
-        u_val = u_array[val_indices]
-        u_test = u_array[test_indices]
-        x_train = x_array[train_indices]
-        x_val = x_array[val_indices]
-        x_test = x_array[test_indices]
-        if c_array is not None:
-            c_train = c_array[train_indices]
-            c_val = c_array[val_indices]
-            c_test = c_array[test_indices]
-        else:
-            c_train = c_val = c_test = None
         
-        # Compute dataset statistics from training data
-        # Reshape u_train to [num_samples * num_timesteps * num_nodes, num_active_vars]
-        u_train_flat = u_train.reshape(-1, u_train.shape[-1])
-        u_mean = np.mean(u_train_flat, axis=0)
-        u_std = np.std(u_train_flat, axis=0) + EPSILON  # Avoid division by zero
+        print(f"Rank 0: Checking/Updating {len(filenames_to_process)} '.pt' files in {processed_dir} with edge information...")
 
-        # Store statistics as torch tensors
-        self.u_mean = torch.tensor(u_mean, dtype=self.dtype)
-        self.u_std = torch.tensor(u_std, dtype=self.dtype)
-    
-        # Normalize data using NumPy operations
-        u_train = (u_train - u_mean) / u_std
-        u_val = (u_val - u_mean) / u_std
-        u_test = (u_test - u_mean) / u_std
+        latent_tokens_cpu = self.latent_tokens.cpu()
+        num_latent_tokens = latent_tokens_cpu.shape[0]
 
-        # If c is used, compute statistics and normalize c
-        if c_array is not None:
-            c_train_flat = c_train.reshape(-1, c_train.shape[-1])
-            c_mean = np.mean(c_train_flat, axis=0)
-            c_std = np.std(c_train_flat, axis=0) + EPSILON  # Avoid division by zero
+        from src.model.layers.magno import get_neighbor_strategy
+        for filename in tqdm(filenames_to_process, desc="Updating .pt files"):
+            fpath = os.path.join(processed_dir, filename)
+            fpath_tmp = fpath + ".tmp"
+            try:
+                data_old = torch.load(fpath, map_location='cpu')
+                data = EnrichedData(pos = data_old.pos, x=data_old.x)
+                for attr, value in data_old:
+                     if attr not in ['pos', 'x']: 
+                         setattr(data, attr, value)
+                data.num_latent_nodes = num_latent_tokens
+                if dataset_config.use_rescale_new:
+                    phys_pos = rescale_new(data.pos.to(torch.float), (-1, 1), self.metadata.domain_x)
+                else:
+                    phys_pos = rescale(data.pos.to(torch.float), (-1, 1)) # Rescale to [-1, 1], very important!
+                num_physical_nodes = phys_pos.shape[0]
+                batch_idx_phys = torch.zeros(num_physical_nodes, dtype=torch.long)
+                batch_idx_latent = torch.zeros(num_latent_tokens, dtype=torch.long)
 
-            # Store statistics
-            self.c_mean = torch.tensor(c_mean, dtype=self.dtype)
-            self.c_std = torch.tensor(c_std, dtype=self.dtype)
+                for scale_idx, scale in enumerate(gno_config.scales):
+                    scaled_radius = gno_config.gno_radius * scale
+                    # --- Encoder Edges ---
+                    enc_edge_index = get_neighbor_strategy(
+                        neighbor_strategy=gno_config.neighbor_strategy,
+                        phys_pos = phys_pos,
+                        batch_idx_phys = batch_idx_phys,
+                        latent_tokens_pos = latent_tokens_cpu,
+                        batch_idx_latent = batch_idx_latent,
+                        radius=scaled_radius
+                    ).to(torch.int32)
+                    setattr(data, f'encoder_edge_index_s{scale_idx}', enc_edge_index)
+                    if enc_edge_index.numel() > 0:
+                        enc_counts = torch.bincount(enc_edge_index[0], minlength=num_latent_tokens).to(torch.int32)
+                    else:
+                        enc_counts = torch.zeros(num_latent_tokens, dtype=torch.int32)
+                    setattr(data, f'encoder_query_counts_s{scale_idx}', enc_counts)
+                    # --- Decoder Edges ---
+                    dec_edge_index = get_neighbor_strategy(
+                        neighbor_strategy=gno_config.neighbor_strategy,
+                        phys_pos = latent_tokens_cpu,
+                        batch_idx_phys = batch_idx_latent,
+                        latent_tokens_pos = phys_pos,
+                        batch_idx_latent = batch_idx_phys,
+                        radius=scaled_radius
+                    ).to(torch.int32)
+                    setattr(data, f'decoder_edge_index_s{scale_idx}', dec_edge_index)
+                    if dec_edge_index.numel() > 0:
+                        dec_counts = torch.bincount(dec_edge_index[0], minlength=num_physical_nodes).to(torch.int32)
+                    else:
+                        dec_counts = torch.zeros(num_physical_nodes, dtype=torch.int32)
+                    setattr(data, f'decoder_query_counts_s{scale_idx}', dec_counts)
+                # --- Save updated data ---
+                torch.save(data, fpath_tmp)
+                os.replace(fpath_tmp, fpath)
+            except FileNotFoundError:
+                print(f"Warning: File not found during update: {fpath}")
+            except Exception as e:
+                print(f"Error processing file {fpath}: {e}")
+                if os.path.exists(fpath_tmp):
+                     os.remove(fpath_tmp)
+        print(f"Rank 0: Finished checking/updating '.pt' files.")
+            
+    def init_dataset(self, dataset_config):
+        print("Initializing PyG dataset ...")  
+        self.latent_token_size = self.model_config.args.latent_tokens
+        data_root = dataset_config.base_path
+        order_file_path = os.path.join(data_root, "order_use.txt")
+        processed_data_path = os.path.join(data_root, dataset_config.processed_folder)
 
-            # Normalize c
-            c_train = (c_train - c_mean) / c_std
-            c_val = (c_val - c_mean) / c_std
-            c_test = (c_test - c_mean) / c_std
+        if not os.path.exists(processed_data_path):
+            raise FileNotFoundError(f"Processed data directory does not exist: {processed_data_path}")
+        if not os.path.exists(order_file_path):
+            raise FileNotFoundError(f"Order file does not exist: {order_file_path}")
 
-        u_train, x_train = torch.tensor(u_train, dtype=self.dtype), torch.tensor(x_train, dtype=self.dtype)
-        u_val, x_val = torch.tensor(u_val, dtype=self.dtype), torch.tensor(x_val, dtype=self.dtype)
-        u_test, x_test = torch.tensor(u_test, dtype=self.dtype), torch.tensor(x_test, dtype=self.dtype)
-
-        print("Starting Graph Build ...")
-        graph_start_time = time.time()
-        nb_search = NeighborSearch(
-            use_torch_cluster=self.model_config.args.magno.gno_use_torch_cluster)
-        gno_radius = self.model_config.args.magno.gno_radius
-        scales = self.model_config.args.magno.scales
+        # --- Latent Tokens ---
         phy_domain = self.metadata.domain_x
         x_min, y_min, z_min = phy_domain[0]
         x_max, y_max, z_max = phy_domain[1]
@@ -146,159 +219,122 @@ class StaticTrainer3D(TrainerBase):
             indexing = "ij"
         )
         latent_queries = torch.stack(meshgrid, dim = -1).reshape(-1, 3)
-        self.latent_tokens = rescale(latent_queries, (-1, 1))
-
-        def custom_collate_fn(batch):
-            inputs = torch.stack([item[0] for item in batch])          
-            labels = torch.stack([item[1] for item in batch])         
-            coords = torch.stack([item[2] for item in batch])          
-            encoder_graphs = [item[3] for item in batch] 
-            decoder_graphs = [item[4] for item in batch]  
-            return inputs, labels, coords, encoder_graphs, decoder_graphs
+        if dataset_config.use_rescale_new:
+            self.latent_tokens = rescale_new(latent_queries, (-1, 1), phy_domain)
+        else:
+            self.latent_tokens = rescale(latent_queries, (-1, 1))
         
-        if self.setup_config.train:
-            print("Starting Training Graph Build ...")
-            encoder_graphs_train = []
-            decoder_graphs_train = []
-            for i in range(len(x_train)):
-                x_coord = rescale(x_train[i, 0], (-1, 1))
-                encoder_nbrs = []
-                for scale in scales:
-                    scaled_radius = gno_radius * scale
-                    with torch.no_grad():
-                        nbrs = nb_search(
-                            data = x_coord, 
-                            queries = self.latent_tokens, 
-                            radi = scaled_radius,
-                            device = self.device)
-                    encoder_nbrs.append(nbrs)
-                encoder_graphs_train.append(encoder_nbrs)
+        print(f"Rank {self.setup_config.rank}: Dataset initialization finished.")
 
-                decoder_nbrs = []
-                for scale in scales:
-                    scaled_radius = gno_radius * scale
-                    with torch.no_grad():
-                        nbrs = nb_search(
-                            data = self.latent_tokens, 
-                            queries = x_coord, 
-                            radi = scaled_radius,
-                            device = self.device)
-                    decoder_nbrs.append(nbrs)
-                decoder_graphs_train.append(decoder_nbrs)
-
-            train_ds = CustomDataset(
-                inputs = x_train,
-                labels = u_train, 
-                coords = x_train,
-                encoder_graphs = encoder_graphs_train,
-                decoder_graphs = decoder_graphs_train)
+        # --- Pre-computation /Update Step ---
+        if dataset_config.update_pt_files_with_edges:
+            gno_cfg_for_precompute = self.model_config.args.magno
+            if self.setup_config.rank == 0:
+                self._update_pt_files_with_edges(
+                    dataset_config,
+                    order_file_path,
+                    gno_cfg_for_precompute
+                )
+            if self.setup_config.distributed:
+                print(f"Rank {self.setup_config.rank}: Waiting for edge pre-computation barrier...")
+                torch.distributed.barrier()
+                print(f"Rank {self.setup_config.rank}: Barrier passed.")
             
+            self.model_config.args.magno.precompute_edges = True
+            print(f"Rank {self.setup_config.rank}: Set model config to use precomputed edges.")
+
+        # --- end Pre-computation /Update Step ---
+            
+        # --- Calculate or Load Normalization Stats ---
+        self._calculate_or_load_stats(dataset_config, order_file_path, data_root)
+        
+
+        # --- Define Transforms ---
+        if dataset_config.use_rescale_new:
+            rescale_transform = RescalePositionNew(lims=(-1., 1.), phy_domain = phy_domain)
+        else:
+            rescale_transform = RescalePosition(lims=(-1., 1.))
+        
+        normalize_transform = NormalizeFeatures(mean=self.u_mean, std=self.u_std)
+        composed_transform = Compose([rescale_transform, normalize_transform])
+
+        if self.setup_config.train:
+            print(f"Rank {self.setup_config.rank}: Loading train dataset...")
+            train_ds = VTKMeshDataset(
+                root = data_root,
+                order_file = order_file_path,
+                dataset_config = dataset_config,
+                split="train",
+                transform = composed_transform
+            )
+            print(f"Rank {self.setup_config.rank}: Loading validation dataset...")
+            val_ds = VTKMeshDataset(
+                root = data_root,
+                order_file = order_file_path,
+                dataset_config = dataset_config,
+                split="val",
+                transform = composed_transform
+            )
+        print(f"Rank {self.setup_config.rank}: Loading test dataset...")
+        test_ds = VTKMeshDataset(
+            root = data_root,
+            order_file = order_file_path,
+            dataset_config = dataset_config,
+            split="test",
+            transform = composed_transform
+        )
+
+        self.num_input_channels = test_ds[0].pos.shape[1]
+        self.num_output_channels = test_ds[0].x.shape[1]
+        
+        # --- Create DataLoaders ---
+        if self.setup_config.train:
+            ## --- Create DistributedSampler for training ---
             train_sampler = None
             if self.setup_config.distributed:
                 train_sampler = DistributedSampler(
                     train_ds,
                     num_replicas=self.setup_config.world_size,
-                    rank=self.setup_config.local_rank
+                    rank=self.setup_config.rank,
+                    shuffle=dataset_config.shuffle, # Sampler handles shuffling
+                    drop_last=True # Often good practice for DDP
                 )
+                print(f"Rank {self.setup_config.rank}: Created DistributedSampler for training.")
 
-            self.train_loader = DataLoader(
+            self.train_loader = PyGDataLoader(
                 train_ds,
-                batch_size = dataset_config.batch_size,
-                shuffle = (train_sampler is None and dataset_config.shuffle),
-                collate_fn = custom_collate_fn,
-                num_workers = dataset_config.num_workers,
-                sampler=train_sampler
+                batch_size=dataset_config.batch_size,
+                shuffle=False if train_sampler is not None else dataset_config.shuffle,
+                num_workers=dataset_config.num_workers,
+                sampler=train_sampler,
+                pin_memory=True, # Good practice if using GPU
+                drop_last=train_sampler is not None 
             )
 
-            encoder_graphs_val = []
-            decoder_graphs_val = []
-            for i in range(len(x_val)):
-                x_coord = rescale(x_val[i, 0], (-1, 1))
-                encoder_nbrs = []
-                for scale in scales:
-                    scaled_radius = gno_radius * scale
-                    with torch.no_grad():
-                        nbrs = nb_search(
-                            data = x_coord, 
-                            queries = self.latent_tokens, 
-                            radi = scaled_radius,
-                            device = self.device)
-                    encoder_nbrs.append(nbrs)
-                encoder_graphs_val.append(encoder_nbrs)
-
-                decoder_nbrs = []
-                for scale in scales:
-                    scaled_radius = gno_radius * scale
-                    with torch.no_grad():
-                        nbrs = nb_search(
-                            data = self.latent_tokens,
-                            queries = x_coord, 
-                            radi = scaled_radius,
-                            device = self.device)
-                    decoder_nbrs.append(nbrs)
-                decoder_graphs_val.append(decoder_nbrs)
-            
-            val_ds = CustomDataset(
-                inputs = x_val,
-                labels = u_val, 
-                coords = x_val,
-                encoder_graphs = encoder_graphs_val,
-                decoder_graphs = decoder_graphs_val)
-            
-            self.val_loader = DataLoader(
+            val_sampler = None
+            # if self.setup_config.distributed:
+            #     val_sampler = DistributedSampler(val_ds, shuffle=False, rank=self.setup_config.rank)
+            self.val_loader = PyGDataLoader(
                 val_ds,
-                batch_size=dataset_config.batch_size, 
-                shuffle=False, 
-                collate_fn=custom_collate_fn,
-                num_workers=dataset_config.num_workers
+                batch_size=dataset_config.batch_size,
+                shuffle=False,
+                num_workers=dataset_config.num_workers,
+                pin_memory=True,
+                sampler=val_sampler
             )
 
-        print("Starting Testing Graph Build ...")
-        encoder_graphs_test = []
-        decoder_graphs_test = []
-        for i in range(len(x_test)):
-            x_coord = rescale(x_test[i, 0], (-1,1))
-            encoder_nbrs = []
-            for scale in scales:
-                scaled_radius = gno_radius * scale
-                with torch.no_grad():
-                    nbrs = nb_search(
-                        data = x_coord, 
-                        queries = self.latent_tokens, 
-                        radi = scaled_radius,
-                        device = self.device)
-                encoder_nbrs.append(nbrs)
-            encoder_graphs_test.append(encoder_nbrs)
+        test_sampler = None
+        # if self.setup_config.distributed:
+        #     test_sampler = DistributedSampler(test_ds, shuffle=False, rank=self.setup_config.rank)
+        self.test_loader = PyGDataLoader(   
+            test_ds,
+            batch_size=dataset_config.batch_size,
+            shuffle=False,
+            num_workers=dataset_config.num_workers,
+            pin_memory=True,
+            sampler=test_sampler
+        )
 
-
-            decoder_nbrs = []
-            for scale in scales:
-                scaled_radius = gno_radius * scale
-                with torch.no_grad():
-                    nbrs = nb_search(
-                        data = self.latent_tokens, 
-                        queries = x_coord, 
-                        radi = scaled_radius,
-                        device = self.device)
-                decoder_nbrs.append(nbrs)
-            decoder_graphs_test.append(decoder_nbrs)
-        
-        print(f"Graph building takes {time.time() - graph_start_time} s!")
-
-        test_ds = CustomDataset(
-            inputs = x_test,
-            labels = u_test, 
-            coords = x_test,
-            encoder_graphs = encoder_graphs_test,
-            decoder_graphs = decoder_graphs_test)
-
-        self.test_loader = DataLoader(
-            test_ds, 
-            batch_size=dataset_config.batch_size, 
-            shuffle=False, 
-            collate_fn=custom_collate_fn,
-            num_workers=dataset_config.num_workers)
-                                                    
     def init_model(self, model_config):
         self.model = init_model(
             input_size=self.num_input_channels, 
@@ -306,6 +342,7 @@ class StaticTrainer3D(TrainerBase):
             model=model_config.name,
             config=model_config.args
             )
+
         self.model.to(self.device)
         
         if self.setup_config.distributed:
@@ -315,134 +352,168 @@ class StaticTrainer3D(TrainerBase):
                 output_device=self.setup_config.local_rank
             )
         
-    def train_step(self, batch):
-        x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = batch
-        x_batch, y_batch, coord_batch = x_batch.to(self.device), y_batch.to(self.device), coord_batch.to(self.device)
-        self.latent_tokens = self.latent_tokens.to(self.device)
-        encoder_graph_batch = move_to_device(encoder_graph_batch, self.device)
-        decoder_graph_batch = move_to_device(decoder_graph_batch, self.device)
-        x_batch, y_batch, coord_batch = x_batch.squeeze(1), y_batch.squeeze(1), coord_batch.squeeze(1)
-        pred = self.model(
-            pndata = x_batch,
-            xcoord = coord_batch, 
-            tokens = self.latent_tokens,
-            encoder_nbrs = encoder_graph_batch, 
-            decoder_nbrs = decoder_graph_batch)
-        return self.loss_fn(pred, y_batch)
+    def train_step(self, batch: "pyg.data.Batch") -> torch.Tensor:
+        batch = batch.to(self.device)
+        latent_tokens_dev = self.latent_tokens.to(self.device)
 
-    def validate(self, loader):
+        pred = self.model(
+            batch = batch,
+            tokens_pos = latent_tokens_dev
+        )
+
+        target = batch.x
+        target = target
+        return self.loss_fn(pred, target)
+
+    def validate(self, loader: PyGDataLoader):
         self.model.eval()
         total_loss = 0.0
         with torch.no_grad():
-            for x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch in loader:
-                x_batch, y_batch, coord_batch = x_batch.to(self.device), y_batch.to(self.device), coord_batch.to(self.device)
-                self.latent_tokens = self.latent_tokens.to(self.device)
-                encoder_graph_batch = move_to_device(encoder_graph_batch, self.device)
-                decoder_graph_batch = move_to_device(decoder_graph_batch, self.device)
-                x_batch, y_batch, coord_batch = x_batch.squeeze(1), y_batch.squeeze(1), coord_batch.squeeze(1)
+            for batch in loader:
+                batch = batch.to(self.device)
+                latent_tokens_dev = self.latent_tokens.to(self.device)
                 pred = self.model(
-                    pndata = x_batch,
-                    xcoord = coord_batch, 
-                    tokens = self.latent_tokens,
-                    encoder_nbrs = encoder_graph_batch, 
-                    decoder_nbrs = decoder_graph_batch)
-                loss = self.loss_fn(pred, y_batch)
+                    batch = batch,
+                    tokens_pos = latent_tokens_dev
+                )
+                target = batch.x
+                target = target
+
+                loss = self.loss_fn(pred, target)
                 total_loss += loss.item()
-        return total_loss / len(loader)
+        return total_loss / len(loader.dataset)
 
     def test(self):
         self.model.eval()
-        self.model.to(self.device)
-        first_batch_plotted = False
-
         metric_suite = self.dataset_config.metric_suite
-        all_batch_metrics = []
         
+        all_poseidon_batch_errors = []
+        all_general_batch_metrics_dicts = [] 
+
+        # Store data needed for metric calculation and plotting
+        all_batch_targets_denorm = []
+        all_batch_preds_denorm = []
+        plot_coords, plot_gtr, plot_prd = None, None, None # For plotting first sample
+        
+        num_test_samples = len(self.test_loader.dataset)
         print(f"Starting testing with metric suite: '{metric_suite}'")
 
         with torch.no_grad():
-            for i, (x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch) in enumerate(self.test_loader):
-                x_batch, y_batch, coord_batch = x_batch.to(self.device), y_batch.to(self.device), coord_batch.to(self.device) # Shape: [batch_size, num_timesteps, num_nodes, num_channels]
-                self.latent_tokens = self.latent_tokens.to(self.device)
-                encoder_graph_batch = move_to_device(encoder_graph_batch, self.device)
-                decoder_graph_batch = move_to_device(decoder_graph_batch, self.device)
-                x_batch, y_batch, coord_batch = x_batch.squeeze(1), y_batch.squeeze(1), coord_batch.squeeze(1)
-                pred = self.model(
-                    pndata = x_batch,
-                    xcoord = coord_batch, 
-                    tokens = self.latent_tokens,
-                    encoder_nbrs = encoder_graph_batch, 
-                    decoder_nbrs = decoder_graph_batch)
-                pred_de_norm = pred * self.u_std.to(self.device) + self.u_mean.to(self.device)
-                y_sample_de_norm = y_batch * self.u_std.to(self.device) + self.u_mean.to(self.device)
-                
-                if metric_suite == "poseidon":
-                    batch_rel_errors = compute_batch_errors(y_sample_de_norm, pred_de_norm, self.metadata)
-                    all_batch_metrics.append(batch_rel_errors) 
-                elif metric_suite == "general":
-                    batch_metrics_dict = compute_general_metrics_batch(y_sample_de_norm, pred_de_norm)
-                    all_batch_metrics.append(batch_metrics_dict) 
-                else:
-                    raise ValueError(f"Unsupported metric_suite: {metric_suite}")
+            for i, batch in enumerate(self.test_loader):
+                batch = batch.to(self.device)
+                latent_tokens_dev = self.latent_tokens.to(self.device)
 
-                if i == 0 and not first_batch_plotted:
-                    try:
-                        vis_idx = -1
-                        coords_np = coord_batch[vis_idx].cpu().numpy()
-                        channel_to_plot = 0
-                        if pred_de_norm.shape[-1] <= channel_to_plot:
-                           print(f"Warning: Channel {channel_to_plot} requested for plotting, but model output only has {pred_de_norm.shape[-1]} channels. Defaulting to channel 0.")
-                           channel_to_plot = 0
-                        # -------------------------------------------------------------
-                        gtr_np = y_sample_de_norm[vis_idx, :, channel_to_plot].cpu().numpy()
-                        prd_np = pred_de_norm[vis_idx, :, channel_to_plot].cpu().numpy()
+                pred_norm = self.model(batch, latent_tokens_dev)
+                target_norm = batch.x
 
-                        try:
-                            var_name = self.metadata.names['u'][self.metadata.active_variables[channel_to_plot]]
-                        except (IndexError, KeyError, TypeError):
-                            var_name = f"Channel {channel_to_plot}"
-                            print(f"Warning: Could not retrieve variable name for channel {channel_to_plot}. Using default.")
+                # De-normalize predictions and targets
+                u_std_dev = self.u_std.to(self.device)
+                u_mean_dev = self.u_mean.to(self.device)
+                pred_de_norm = pred_norm * u_std_dev + u_mean_dev
+                target_de_norm = target_norm * u_std_dev + u_mean_dev
 
-                        plot_3d_comparison_matplotlib(
-                            coords=coords_np,
-                            u_gtr=gtr_np,
-                            u_prd=prd_np,
-                            save_path=self.path_config.result_path, 
-                            variable_name=var_name,
-                            point_size= 2.0,
-                            view_angle= (25, -135)
+                # --- Store results for aggregation ---
+                # Store de-normalized results on CPU to save GPU memory
+                all_batch_targets_denorm.append(target_de_norm.cpu())
+                all_batch_preds_denorm.append(pred_de_norm.cpu())
+                # --- End Storing ---
+
+                # --- Plotting Logic (extract data for first sample of first batch) ---
+                if i == 0 and self.setup_config.rank == 0:
+                    plotting_idx = 0
+                    first_graph_node_mask = (batch.batch == plotting_idx)
+                    plot_coords = batch.pos[first_graph_node_mask].cpu().numpy()
+                    plot_gtr = target_de_norm[first_graph_node_mask].cpu().numpy()
+                    plot_prd = pred_de_norm[first_graph_node_mask].cpu().numpy()
+                    print(f"Extracted plotting data of {batch.filename[plotting_idx]}:"
+                            f"coords shape {plot_coords.shape}, gtr shape {plot_gtr.shape}, prd shape {plot_prd.shape}"
                         )
-                        first_batch_plotted = True
-                    except Exception as plot_err:
-                        print(f"Error during 3D plotting of first batch sample: {plot_err}")
+                # --- End Plotting Logic ---
 
+        # --- Aggregate Metrics and Plot (Rank 0 only) ---
         if self.setup_config.rank == 0:
-            if not all_batch_metrics:
-                print("Warning: No metrics collected during testing.")
-                return
+            full_preds = torch.cat(all_batch_preds_denorm, dim=0)
+            full_targets = torch.cat(all_batch_targets_denorm, dim=0)
+            print(f"Concatenated results: preds shape {full_preds.shape}, targets shape {full_targets.shape}")
 
+            # --- Calculate Metrics ---
             if metric_suite == "poseidon":
-                all_relative_errors_tensor = torch.cat(all_batch_metrics, dim=0)
-                final_metric = compute_final_metric(all_relative_errors_tensor)
-                self.config.datarow["relative error (direct)"] = final_metric
-                print(f"--- Final Metric (Poseidon Suite) ---")
-                print(f"Relative Error (Median): {final_metric:.6f}")
+                # Adapting Poseidon metric requires metadata and careful handling of batch structure.
+                # We need to reshape full_targets/full_preds back into [NumSamples, 1, NumNodesPerSample, C]
+                # This is non-trivial because NumNodesPerSample varies.
+                # Compute_batch_errors expects [B, T, S, V].
+                # We will skip the actual calculation here as it needs significant adaptation.
+                print("Warning: 'poseidon' metric suite requires adaptation for variable nodes per sample PyG structure. Skipping calculation.")
+                final_metric = float('nan')
+                self.config.datarow["relative error (direct)"] = final_metric # Store NaN
+            
+            if metric_suite == "drivaernet":
+                agg_metrics = compute_drivaernet_metric(
+                    gtr_ls = all_batch_targets_denorm,
+                    prd_ls = all_batch_preds_denorm,
+                    metadata =  self.metadata
+                )
+
+                print(f"--- Final Metrics (Drivaernet Suite - Full Dataset) ---")
+                print(f"MSE (x10^-2):       {agg_metrics['MSE'] * 100:.4f}")
+                print(f"MAE (x10^-1):       {agg_metrics['MAE'] * 10:.4f}")
+                print(f"RMSE:               {agg_metrics['RMSE']:.4f}")
+                print(f"Max_Error:          {agg_metrics['Max_Error']:.4f}")
+                print(f"Rel L2 Error (%):   {agg_metrics['Rel_L2']:.4f}")
+                print(f"Rel L1 Error (%):   {agg_metrics['Rel_L1']:.4f}")
 
             elif metric_suite == "general":
-                final_metrics_dict = aggregate_general_metrics(all_batch_metrics)
-                self.config.datarow["MSE (x10^-2)"] = final_metrics_dict['MSE']
-                self.config.datarow["MAE (x10^-1)"] = final_metrics_dict['MAE']
+                # Calculate general metrics on the full concatenated tensors
+                diff = full_preds - full_targets
+                mse = torch.mean(diff ** 2).item()
+                mae = torch.mean(torch.abs(diff)).item()
+                max_ae = torch.max(torch.abs(diff)).item()
+
+                norm_diff_l2 = torch.linalg.norm(diff.float()) 
+                norm_gtr_l2 = torch.linalg.norm(full_targets.float())
+                rel_l2 = (norm_diff_l2 / (norm_gtr_l2 + EPSILON)).item() * 100.0
+
+                norm_diff_l1 = torch.linalg.norm(diff.float(), ord=1)
+                norm_gtr_l1 = torch.linalg.norm(full_targets.float(), ord=1)
+                rel_l1 = (norm_diff_l1 / (norm_gtr_l1 + EPSILON)).item() * 100.0
+
+                final_metrics_dict = {
+                    'MSE': mse, 'MAE': mae, 'Max AE': max_ae,
+                    'Rel L2 Error (%)': rel_l2, 'Rel L1 Error (%)': rel_l1
+                }
+
+                # Store and print results
+                self.config.datarow["MSE (x10^-2)"] = final_metrics_dict['MSE'] * 100
+                self.config.datarow["MAE (x10^-1)"] = final_metrics_dict['MAE'] * 10
                 self.config.datarow["Max AE"] = final_metrics_dict['Max AE']
                 self.config.datarow["Rel L2 Error (%)"] = final_metrics_dict['Rel L2 Error (%)']
                 self.config.datarow["Rel L1 Error (%)"] = final_metrics_dict['Rel L1 Error (%)']
-            
-                print(f"--- Final Metrics (General Suite) ---")
-                print(f"MSE (x10^-2):       {final_metrics_dict['MSE']:.4f}")
-                print(f"MAE (x10^-1):       {final_metrics_dict['MAE']:.4f}")
+
+                print(f"--- Final Metrics (General Suite - Full Dataset) ---")
+                print(f"MSE (x10^-2):       {final_metrics_dict['MSE'] * 100:.4f}")
+                print(f"MAE (x10^-1):       {final_metrics_dict['MAE'] * 10:.4f}")
                 print(f"Max AE:             {final_metrics_dict['Max AE']:.4f}")
                 print(f"Rel L2 Error (%):   {final_metrics_dict['Rel L2 Error (%)']:.4f}")
                 print(f"Rel L1 Error (%):   {final_metrics_dict['Rel L1 Error (%)']:.4f}")
-        # --- End Aggregation ---
+
+            # --- Plotting the stored first sample ---
+            print("Attempting to plot first sample...")
+            try:
+                channel_to_plot = 0
+                gtr_np = plot_gtr[:, channel_to_plot]
+                prd_np = plot_prd[:, channel_to_plot]
+
+                plot_save_path = self.path_config.result_path
+                var_name = self.metadata.names['u'] 
+                plot_3d_comparison_matplotlib(
+                    coords=plot_coords, u_gtr=gtr_np, u_prd=prd_np,
+                    save_path=plot_save_path,
+                    variable_name=var_name,
+                    point_size=2.0, view_angle=(25, -135)
+                )
+                print(f"Saved plot for first test sample to {plot_save_path}")
+            except Exception as plot_err:
+                print(f"Error during 3D plotting of first test sample: {plot_err}")
+
         elif self.setup_config.distributed:
-             # Handle non-rank 0 processes in distributed testing if necessary
-             pass
+             pass # Handle non-rank 0 processes
