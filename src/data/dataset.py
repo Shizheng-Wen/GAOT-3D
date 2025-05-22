@@ -10,7 +10,7 @@ class Metadata:
   group_u: str
   group_c: str
   group_x: str
-  type: Literal['poseidon', 'rigno']
+  type: Literal['poseidon', 'rigno', 'gaot']
   fix_x: bool
   domain_x: tuple[Sequence[int], Sequence[int]]
   domain_t: tuple[int, int]
@@ -721,12 +721,12 @@ DATASET_METADATA = {
     global_mean=[0.80, 0., 0., 0.553],
     global_std=[0.31, 0.391, 0.356, 0.185],
   ),
-  'gnpde-unstructured/kh': Metadata(
+  'gaot-unstructured/kh': Metadata(
     periodic=True,
     group_u='u',
     group_c=None,
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([0, 0], [1, 1]),
     domain_t=(0, 1),
     fix_x=True,
@@ -738,12 +738,12 @@ DATASET_METADATA = {
     global_mean=[0.80, 0., 0., 1.0],
     global_std=[0.31, 0.391, 0.356, 0.185],
   ),
-  'gnpde-unstructured/riemann_kh': Metadata(
+  'gaot-unstructured/riemann_kh': Metadata(
     periodic=True,
     group_u='u',
     group_c=None,
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([0, 0], [1, 1]),
     domain_t=(0, 1),
     fix_x=True,
@@ -755,12 +755,12 @@ DATASET_METADATA = {
     global_mean=[0.80, 0., 0., 1.33],
     global_std=[0.31, 0.391, 0.356, 0.185],
   ),
-  'gnpde-unstructured/sines': Metadata(
+  'gaot-unstructured/sines': Metadata(
     periodic=True,
     group_u='u',
     group_c=None,
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([0, 0], [1, 1]),
     domain_t=(0, 1),
     fix_x=True,
@@ -772,12 +772,12 @@ DATASET_METADATA = {
     global_mean=[0.0, 0.0],
     global_std=[0.391, 0.356],
   ),
-  'gnpde-unstructured/LDC_NS_harmonics': Metadata(
+  'gaot-unstructured/LDC_NS_harmonics': Metadata(
     periodic=False,
     group_u='u',
     group_c='c',
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([0, 0], [2, 2]),
     domain_t=None,
     fix_x=True,
@@ -789,12 +789,12 @@ DATASET_METADATA = {
     global_mean=[0.0011325,  -0.00068742,  0.20525378, -0.30721044],
     global_std=[0.18050442, 0.12689, 0.4077924, 0.692339],
   ),
-  'gnpde-unstructured/LDC_NS_nurbs': Metadata(
+  'gaot-unstructured/LDC_NS_nurbs': Metadata(
     periodic=False,
     group_u='u',
     group_c='c',
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([0, 0], [2, 2]),
     domain_t=None,
     fix_x=True,
@@ -806,12 +806,12 @@ DATASET_METADATA = {
     global_mean=[0.0011375,  -0.00071439,  0.21057696, -0.32318238],
     global_std=[0.1742114, 0.119229, 0.41647578, 0.73553521],
   ),
-  'gnpde-unstructured/LDC_NS_skelneton': Metadata(
+  'gaot-unstructured/LDC_NS_skelneton': Metadata(
     periodic=False,
     group_u='u',
     group_c='c',
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([0, 0], [2, 2]),
     domain_t=None,
     fix_x=True,
@@ -823,12 +823,12 @@ DATASET_METADATA = {
     global_mean=[0.00113499,  0.00069739,  0.23059119, -0.32658179],
     global_std=[0.174432, 0.11727761, 0.44166574, 0.66630582],
   ),
-  'gnpde-unstructured/wave_l_sines': Metadata(
+  'gaot-unstructured/wave_l_sines': Metadata(
     periodic=False,
     group_u='u',
     group_c=None,
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([0.5, 0.], [1.5, 1.]),
     domain_t=(0, 0.1),
     fix_x=True,
@@ -840,12 +840,12 @@ DATASET_METADATA = {
     global_mean=[0.],
     global_std=[0.01080257],
   ),
-  'gnpde-unstructured/naca2412': Metadata(
+  'gaot-unstructured/naca2412': Metadata(
     periodic=False,
     group_u='u',
     group_c='c',
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([-1, -1.5], [2.5, 2]),
     domain_t=None,
     fix_x=False,
@@ -857,12 +857,12 @@ DATASET_METADATA = {
     global_mean=[0.96086993],
     global_std=[0.18490477],
   ),
-  'gnpde-unstructured/naca0012': Metadata(
+  'gaot-unstructured/naca0012': Metadata(
     periodic=False,
     group_u='u',
     group_c='c',
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([-1, -1.5], [2.5, 2]),
     domain_t=None,
     fix_x=False,
@@ -874,12 +874,12 @@ DATASET_METADATA = {
     global_mean=[0.96999054],
     global_std=[0.17089098],
   ),
-  'gnpde-unstructured/rae2822': Metadata(
+  'gaot-unstructured/rae2822': Metadata(
     periodic=False,
     group_u='u',
     group_c='c',
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([-1, -1.5], [2.5, 2]),
     domain_t=None,
     fix_x=False,
@@ -891,12 +891,12 @@ DATASET_METADATA = {
     global_mean=[0.96746538],
     global_std=[0.17268029],
   ),
-  'gnpde-unstructured/bluff': Metadata(
+  'gaot-unstructured/bluff': Metadata(
     periodic=False,
     group_u='u',
     group_c='c',
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([-9.0, -9.0], [9.0, 9.0]),
     domain_t=None,
     fix_x=False,
@@ -908,12 +908,12 @@ DATASET_METADATA = {
     global_mean=[0.94763327],
     global_std=[0.32158885],
   ),
-  'gnpde-unstructured/bluff_small': Metadata(
+  'gaot-unstructured/bluff_small': Metadata(
     periodic=False,
     group_u='u',
     group_c='c',
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([-9.0, -9.0], [9.0, 9.0]),
     domain_t=None,
     fix_x=False,
@@ -925,12 +925,12 @@ DATASET_METADATA = {
     global_mean=[0.95306754],
     global_std=[0.3144897],
   ),
-  'gnpde-unstructured/drivaernet': Metadata(
+  'gaot-unstructured/drivaernet': Metadata(
     periodic=False,
     group_u='u',
     group_c=None,
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([-1.16, -1.20, 0.0], [4.21, 1.19, 1.77]),
     domain_t=None,
     fix_x=False,
@@ -942,12 +942,12 @@ DATASET_METADATA = {
     global_mean=[-94.5],
     global_std=[117.25],
   ),
-  'gnpde-unstructured/drivaernet_shearstress': Metadata(
+  'gaot-unstructured/drivaernet_shearstress': Metadata(
     periodic=False,
     group_u='u',
     group_c=None,
     group_x='x',
-    type='gnpde',
+    type='gaot',
     domain_x=([-1.16, -1.20, 0.0], [4.21, 1.19, 1.77]),
     domain_t=None,
     fix_x=False,
@@ -959,12 +959,12 @@ DATASET_METADATA = {
     global_mean=[-0.6717,  0.0364, -0.0846],
     global_std=[0.8199, 0.4510, 0.7811],
   ),
-  'gnpde-unstructured/fracture': Metadata(
+  'gaot-unstructured/fracture': Metadata(
     periodic=False,
     group_u='c',
     group_c='e',
     group_x='x',
-    type='xiao',
+    type='gaot',
     domain_x=([-.75, -.75], [1.75, 1.75]),
     domain_t=None,
     fix_x=False,
@@ -976,12 +976,12 @@ DATASET_METADATA = {
     global_mean=[0],
     global_std=[1],
   ),
-  'gnpde-unstructured/fracture_dyn': Metadata(
+  'gaot-unstructured/fracture_dyn': Metadata(
     periodic=False,
     group_u='c',
     group_c='e',
     group_x='x',
-    type='xiao',
+    type='gaot',
     domain_x=([0, 0], [1, 1]),
     domain_t=(0, 1),
     fix_x=True,
