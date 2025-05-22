@@ -12,32 +12,22 @@ from dataclasses import dataclass, field
 ###############
 @dataclass
 class OptimizerargsConfig:
-    lr: float = 1e-3
-    weight_decay: float = 1e-3
-    epoch: int = 100
-    loss_scale: float = 1.0
-    eval_every_eps: int = 2
-    scheduler: str = "mix" 
-    early_save_metric: str = 'val'
-
+    lr: float = 1e-3                    # Initial learning rate
+    weight_decay: float = 1e-3          # L2 regularization (weight decay) coefficient
+    epoch: int = 100                    # Total number of training epochs
+    loss_scale: float = 1.0             # Loss scaling factor 
+    eval_every_eps: int = 2             # Evaluate every n epochs
+    scheduler: str = "mix"              # Learning rate scheduler type, support ['step', 'cos', 'exp', 'mix']
+    early_save_metric: str = 'val'      # Metric for early stopping, support ['train', 'val']
     # for mix scheduler
-    max_lr: float = 1e-2     
-    min_lr: float = 1e-5    
-    final_lr: float = 1e-5   
-
+    max_lr: float = 1e-2                # Maximum learning rate for the cosine annealing phase
+    min_lr: float = 1e-5                # Minimum learning rate for the cosine annealing phase
+    final_lr: float = 1e-5              # Final learning rate for the exponential decay phase
     # for step scheduler
-    scheduler_step_size: int = 100 
-    scheduler_gamma: float = 0.8 
-    scheduler_T_max: int = 100 
-    scheduler_eta_min: float = 1e-4 
-
-    # for finetuning optimizer
-    max_grad_norm: float = 5.0 
-    lr_encoder_decoder: float = 5e-4 
-    lr_time_conditioned: float = 5e-4 
-    lr_processor_rest: float = 5e-5 
-    weight_decay_encoder_decoder: float = 1e-6 
-    weight_decay_processor_rest: float = 1e-6 
+    scheduler_step_size: int = 100      # Step size (number of epochs) for StepLR scheduler
+    scheduler_gamma: float = 0.8        # Multiplicative factor for learning rate decay in StepLR scheduler
+    scheduler_T_max: int = 100          # Maximum number of iterations (usually total epochs) for CosineAnnealingLR scheduler
+    scheduler_eta_min: float = 1e-4     # Minimum learning rate for CosineAnnealingLR scheduler
 
 ###############
 # Scheduler

@@ -26,39 +26,39 @@ from ...utils.scale import rescale
 @dataclass
 class MAGNOConfig:
     # GNO parameters
-    use_gno: bool = True
-    gno_coord_dim: int = 2
-    gno_radius: float = 0.033
+    use_gno: bool = True                            # Whether to use MAGNO
+    gno_coord_dim: int = 2                          # Coordinate dimension
+    gno_radius: float = 0.033                       # Radius for neighbor finding
     ## GNOEncoder
-    lifting_channels: int = 16   
-    encoder_feature_attr: str = 'x'
-    in_gno_channel_mlp_hidden_layers: list = field(default_factory=lambda: [64, 64, 64])
-    in_gno_transform_type: str = 'linear'
+    lifting_channels: int = 16                      # Number of channels in the lifting MLP
+    encoder_feature_attr: str = 'x'                 # Feature attribute name for the encoder
+    in_gno_channel_mlp_hidden_layers: list = field(default_factory=lambda: [64, 64, 64]) # Hidden layers in the GNO encoder MLP
+    in_gno_transform_type: str = 'linear'           # Transformation type for the GNO encoder MLP
     ## GNODecoder
-    projection_channels: int = 256
-    out_gno_channel_mlp_hidden_layers: list = field(default_factory=lambda: [64, 64])
-    out_gno_transform_type: str = 'linear'
+    projection_channels: int = 256                  # Number of channels in the projection MLP
+    out_gno_channel_mlp_hidden_layers: list = field(default_factory=lambda: [64, 64]) # Hidden layers in the GNO decoder MLP
+    out_gno_transform_type: str = 'linear'          # Transformation type for the GNO decoder MLP
     # multiscale aggregation
-    scales: list = field(default_factory=lambda: [1.0])
-    use_scale_weights: bool = False
-    use_graph_cache: bool = True
-    gno_use_torch_cluster: bool = False
-    gno_use_torch_scatter: str = True
-    node_embedding: bool = False
-    use_attn: Optional[bool] = None 
-    attention_type: str = 'cosine'
+    scales: list = field(default_factory=lambda: [1.0]) # Scales for multi-scale aggregation
+    use_scale_weights: bool = False                     # Whether to use scale weights
+    use_graph_cache: bool = True                        # Whether to use graph cache
+    gno_use_torch_cluster: bool = False                 # Whether to use torch_cluster for neighbor finding
+    gno_use_torch_scatter: str = True                   # Whether to use torch_scatter for neighbor finding
+    node_embedding: bool = False                        # Whether to use node embedding
+    use_attn: Optional[bool] = None                     # Whether to use attention
+    attention_type: str = 'cosine'                      #  # Type of attention, supports ['cosine', 'dot_product']
     # Geometric embedding
-    use_geoembed: bool = False
-    embedding_method: str = 'statistical'
-    pooling: str = 'max' # pooling method for pointnet geoemb
+    use_geoembed: bool = False                          # Whether to use geometric embedding
+    embedding_method: str = 'statistical'               # Method for geometric embedding, supports ['statistical', 'pointnet']
+    pooling: str = 'max'                                # Pooling method for pointnet geoembedding, supports ['max', 'mean']
     # Sampling
-    sampling_strategy: Optional[str] = None   # ["max_neighbors", "ratio"]
-    max_neighbors: Optional[int] = None     
-    sample_ratio: Optional[float] = None 
+    sampling_strategy: Optional[str] = None            # Sampling strategy, supports ['max_neighbors', 'ratio']
+    max_neighbors: Optional[int] = None                # Maximum number of neighbors
+    sample_ratio: Optional[float] = None               # Sampling ratio
     # neighbor finding strategy
-    neighbor_strategy: str = 'radius'       # ["radius", "knn", "bidirectional"]
+    neighbor_strategy: str = 'radius'                  # Neighbor finding strategy, supports ['radius', 'knn', 'bidirectional']
     # Dataset
-    precompute_edges: bool = True          # Flag for model to load vs compute edges. This aligns with the update_pt_files_with_edges in DatasetConfig
+    precompute_edges: bool = True                      # Flag for model to load vs compute edges. This aligns with the update_pt_files_with_edges in DatasetConfig
 
 
 ############

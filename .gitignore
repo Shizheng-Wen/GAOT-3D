@@ -1,26 +1,33 @@
-.DS_Store
-
-.results/
-.loss/
-.ckpt/
-.database/
-.database_old/
-.vscode/
-
-
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.Python
+*.egg-info/
 **__pycache__**
 
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS specific
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Data / Results / Chekpoints
 slurmjob/**
-#!slurmjob/*.sh
-
-
-# config/*
-# !config/tpl/
-# !config/tpl/**
-# #!config/gaot/
-
+config/*
+!config/examples
 tests/
-
-tests
-tests/postprocess/*
 logs/*
