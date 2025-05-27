@@ -31,3 +31,8 @@ config/*
 !config/examples
 tests/
 logs/*
+.ckpt/
+.database/
+.loss/
+.results/
+

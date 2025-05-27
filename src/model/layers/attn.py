@@ -241,7 +241,6 @@ class TransformerBlock(nn.Module):
         kwargs.pop("positional_embedding")
         kwargs.pop("use_long_range_skip")
         kwargs.pop("patch_size")
-        kwargs.pop("axis_concatenated")
         return cls(input_size, output_size, skip_connection=skip_connection, **kwargs)
 
 class Transformer(nn.Module):
