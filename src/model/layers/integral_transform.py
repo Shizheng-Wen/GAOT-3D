@@ -28,6 +28,10 @@ if not HAS_TORCH_SCATTER:
     from .utils.scatter_native import scatter_native
     scatter = scatter_native 
 
+"""
+Reference: https://github.com/neuraloperator/neuraloperator/blob/main/neuralop/layers/integral_transform.py
+"""
+
 class IntegralTransform(nn.Module):
     def __init__(
         self,
