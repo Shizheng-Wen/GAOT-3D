@@ -43,14 +43,14 @@ class GeometricEmbedding(nn.Module):
         elif self.method == 'pointnet':
             # PointNet MLPs process individual centered neighbor coords
             self.pointnet_mlp = nn.Sequential(
-                nn.Linear(input_dim, 64), # Input is D-dim coord differences
+                nn.Linear(input_dim, 32), # Input is D-dim coord differences
                 nn.ReLU(),
-                nn.Linear(64, 64),
+                nn.Linear(32, 32),
                 nn.ReLU(),
             )
             # FC layer after pooling
             self.fc = nn.Sequential(
-                nn.Linear(64, output_dim), # Input is pooled feature dim (64)
+                nn.Linear(32, output_dim), # Input is pooled feature dim (64)
             )
         else:
             raise ValueError(f"Unknown method: {self.method}")
@@ -69,8 +69,8 @@ class GeometricEmbedding(nn.Module):
         Args:
             source_pos (Tensor): Coords of source nodes providing geometry [TotalSourceNodes, D].
             query_pos (Tensor): Coords of query nodes for which embeddings are computed [TotalQueryNodes, D].
-            edge_index (Tensor): Bipartite edges [2, NumEdges], where edge_index[0] indexes query_pos,
-                                 and edge_index[1] indexes source_pos.
+            edge_index (Tensor): Bipartite edges [2, NumEdges], where edge_index[1] indexes query_pos,
+                                 and edge_index[0] indexes source_pos.
             batch_source (Tensor, optional): Batch index for source nodes.
             batch_query (Tensor, optional): Batch index for query nodes.
             neighbors_counts (Tensor, optional): Number of neighbors for each query node.
@@ -107,77 +107,86 @@ class GeometricEmbedding(nn.Module):
         Parameters:
             source_pos (Tensor): Coords of source nodes providing geometry [TotalSourceNodes, D].
             query_pos (Tensor): Coords of query nodes for which embeddings are computed [TotalQueryNodes, D].
-            edge_index (Tensor): Bipartite edges [2, NumEdges], where edge_index[0] indexes query_pos,
-                                and edge_index[1] indexes source_pos.
+            edge_index (Tensor): Bipartite edges [2, NumEdges], where edge_index[1] indexes query_pos,
+                                and edge_index[0] indexes source_pos.
             neighbors_counts (Tensor, optional): Number of neighbors for each query node.
 
         Returns:
             geo_features_normalized (torch.FloatTensor): The normalized geometric features, shape: [TotalQueryNodes, num_features]
         """
-        # 基本参数
+        # Basic parameters
         num_queries = query_pos.shape[0]
         num_dims = query_pos.shape[1]
         device = query_pos.device
     
-        # 从 edge_index 提取邻居信息
-        neighbors_index = edge_index[1].long()  # 源节点的索引，形状: [NumEdges]
-        query_indices_per_neighbor = edge_index[0].long()  # 每个邻居对应的查询节点索引，形状: [NumEdges]
+        # Extract neighbor information from edge_index
+        neighbors_index = edge_index[0].long()  # Source node indices, shape: [NumEdges]
+        query_indices_per_neighbor = edge_index[1].long()  # Query node indices for each neighbor, shape: [NumEdges]
         if neighbors_counts is None:
-            num_neighbors_per_query = torch.bincount(query_indices_per_neighbor, minlength=num_queries).to(device)  # 每个查询节点的邻居数，形状: [num_queries]
+            num_neighbors_per_query = torch.bincount(query_indices_per_neighbor, minlength=num_queries).to(device)  # Number of neighbors per query node, shape: [num_queries]
         else:
             neighbors_counts = neighbors_counts.to(device)
             num_neighbors_per_query = neighbors_counts
-        # 邻居数量和是否有邻居的标志
-        N_i = num_neighbors_per_query.float()  # 形状: [num_queries]
-        has_neighbors = N_i > 0  # 形状: [num_queries]
+        # Neighbor count and has-neighbors flag
+        N_i = num_neighbors_per_query.float()  # Shape: [num_queries]
+        has_neighbors = N_i > 0  # Shape: [num_queries]
 
-        # 获取邻居和查询节点的坐标
-        nbr_coords = source_pos[neighbors_index]  # 形状: [NumEdges, num_dims]
-        query_coords_per_neighbor = query_pos[query_indices_per_neighbor]  # 形状: [NumEdges, num_dims]
+        # Get coordinates of neighbors and query nodes
+        nbr_coords = source_pos[neighbors_index]  # Shape: [NumEdges, num_dims]
+        query_coords_per_neighbor = query_pos[query_indices_per_neighbor]  # Shape: [NumEdges, num_dims]
 
-        # 计算距离统计特征
-        distances = torch.norm(nbr_coords - query_coords_per_neighbor, dim=1)  # 形状: [NumEdges]
-        D_avg = scatter(distances, query_indices_per_neighbor, dim=0, dim_size=num_queries, reduce="mean")  # 平均距离，形状: [num_queries]
+        # Calculate distance statistics
+        distances = torch.norm(nbr_coords - query_coords_per_neighbor, dim=1)  # Shape: [NumEdges]
+        D_avg = scatter(distances, query_indices_per_neighbor, dim=0, dim_size=num_queries, reduce="mean")  # Average distance, shape: [num_queries]
 
         distances_squared = distances ** 2
-        E_X2 = scatter(distances_squared, query_indices_per_neighbor, dim=0, dim_size=num_queries, reduce='mean') # 距离平方的均值，形状: [num_queries]
-        E_X_squared = D_avg ** 2  # 平均距离的平方，形状: [num_queries]
-        D_var = E_X2 - E_X_squared  # 距离方差，形状: [num_queries]
-        D_var = torch.clamp(D_var, min=0.0)  # 确保方差非负
+        E_X2 = scatter(distances_squared, query_indices_per_neighbor, dim=0, dim_size=num_queries, reduce='mean') # Mean of squared distances, shape: [num_queries]
+        E_X_squared = D_avg ** 2  # Square of mean distance, shape: [num_queries]
+        D_var = E_X2 - E_X_squared  # Distance variance, shape: [num_queries]
+        D_var = torch.clamp(D_var, min=0.0)  # Ensure non-negative variance
 
-        # 计算邻居质心和偏移
-        nbr_centroid = scatter(nbr_coords, query_indices_per_neighbor, dim=0, dim_size=num_queries, reduce="mean")  # 形状: [num_queries, num_dims]
-        Delta = nbr_centroid - query_pos  # 形状: [num_queries, num_dims]
+        # Calculate neighbor centroid and offset
+        nbr_centroid = scatter(nbr_coords, query_indices_per_neighbor, dim=0, dim_size=num_queries, reduce="mean")  # Shape: [num_queries, num_dims]
+        Delta = nbr_centroid - query_pos  # Shape: [num_queries, num_dims]
 
-        # 计算协方差矩阵
-        nbr_coords_centered = nbr_coords - nbr_centroid[query_indices_per_neighbor]  # 中心化的邻居坐标，形状: [NumEdges, num_dims]
-        cov_components = nbr_coords_centered.unsqueeze(2) * nbr_coords_centered.unsqueeze(1)  # 协方差分量，形状: [NumEdges, num_dims, num_dims]
-        cov_sum = scatter(cov_components, query_indices_per_neighbor, dim=0, dim_size=num_queries, reduce="sum")  # 协方差和，形状: [num_queries, num_dims, num_dims]
+        # Calculate covariance matrix
+        nbr_coords_centered = nbr_coords - nbr_centroid[query_indices_per_neighbor]  # Centered neighbor coordinates, shape: [NumEdges, num_dims]
+        cov_components = nbr_coords_centered.unsqueeze(2) * nbr_coords_centered.unsqueeze(1)  # Covariance components, shape: [NumEdges, num_dims, num_dims]
+        cov_sum = scatter(cov_components, query_indices_per_neighbor, dim=0, dim_size=num_queries, reduce="sum")  # Covariance sum, shape: [num_queries, num_dims, num_dims]
         N_i_clamped = N_i.clone()
-        N_i_clamped[N_i_clamped == 0] = 1.0  # 避免除以零
-        cov_matrix = cov_sum / N_i_clamped.view(-1, 1, 1)  # 协方差矩阵，形状: [num_queries, num_dims, num_dims]
+        N_i_clamped[N_i_clamped == 0] = 1.0  # Avoid division by zero
+        cov_matrix = cov_sum / N_i_clamped.view(-1, 1, 1)  # Covariance matrix, shape: [num_queries, num_dims, num_dims]
 
-        # 计算 PCA 特征（协方差矩阵的特征值）
+        # Calculate PCA features (eigenvalues of covariance matrix)
         PCA_features = torch.zeros(num_queries, num_dims, device=device)
         if has_neighbors.any():
             cov_matrix_valid = cov_matrix[has_neighbors]
-            eigenvalues = torch.linalg.eigvalsh(cov_matrix_valid)  # 计算特征值
-            eigenvalues = eigenvalues.flip(dims=[1])  # 按降序排列
-            PCA_features[has_neighbors] = eigenvalues
+            # Add regularization to avoid singular matrices
+            eps = 1e-6
+            eye = torch.eye(num_dims, device=device, dtype=cov_matrix_valid.dtype)
+            cov_matrix_reg = cov_matrix_valid + eps * eye.unsqueeze(0)
+            try:
+                eigenvalues = torch.linalg.eigvalsh(cov_matrix_reg)  # Calculate eigenvalues
+                eigenvalues = eigenvalues.flip(dims=[1])  # Sort in descending order
+                PCA_features[has_neighbors] = eigenvalues
+            except Exception as e:
+                # If still fails, provide reasonable default eigenvalues
+                default_eigenvals = torch.ones(num_dims, device=device) * eps
+                PCA_features[has_neighbors] = default_eigenvals.unsqueeze(0).expand(has_neighbors.sum(), -1)
         
-        # 组合所有特征
-        N_i_tensor = N_i.unsqueeze(1)  # 形状: [num_queries, 1]
-        D_avg_tensor = D_avg.unsqueeze(1)  # 形状: [num_queries, 1]
-        D_var_tensor = D_var.unsqueeze(1)  # 形状: [num_queries, 1]
-        geo_features = torch.cat([N_i_tensor, D_avg_tensor, D_var_tensor, Delta, PCA_features], dim=1)  # 形状: [num_queries, num_features]
+        # Combine all features
+        N_i_tensor = N_i.unsqueeze(1)  # Shape: [num_queries, 1]
+        D_avg_tensor = D_avg.unsqueeze(1)  # Shape: [num_queries, 1]
+        D_var_tensor = D_var.unsqueeze(1)  # Shape: [num_queries, 1]
+        geo_features = torch.cat([N_i_tensor, D_avg_tensor, D_var_tensor, Delta, PCA_features], dim=1)  # Shape: [num_queries, num_features]
 
-        # 对于没有邻居的查询点，特征置零
+        # Set features to zero for query points with no neighbors
         geo_features[~has_neighbors] = 0.0
 
-        # 特征标准化
+        # Feature normalization
         feature_mean = geo_features.mean(dim=0, keepdim=True)
         feature_std = geo_features.std(dim=0, keepdim=True)
-        feature_std[feature_std < 1e-6] = 1.0  # 防止除以接近零的标准差
+        feature_std[feature_std < 1e-6] = 1.0  # Prevent division by near-zero standard deviation
         geo_features_normalized = (geo_features - feature_mean) / feature_std
 
         return geo_features_normalized
@@ -194,8 +203,8 @@ class GeometricEmbedding(nn.Module):
             print("Warning: GeoEmbed (PointNet) received no edges.")
             return geo_features
 
-        query_idx = edge_index[0]
-        source_idx = edge_index[1]
+        query_idx = edge_index[1].long()
+        source_idx = edge_index[0].long()
 
         # Check which query nodes actually have neighbors
         has_neighbors_mask = torch.bincount(query_idx, minlength=num_query_nodes) > 0
@@ -212,17 +221,14 @@ class GeometricEmbedding(nn.Module):
 
         # Apply PointNet MLP to centered coordinates
         nbr_features = self.pointnet_mlp(nbr_coords_centered)  # [NumEdges, HiddenDim (e.g., 64)]
-
         # Apply pooling per query node
         if self.pooling == 'max':
             pooled_features = scatter(nbr_features, query_idx, dim=0, dim_size=num_query_nodes, reduce='max')
-            if HAS_TORCH_SCATTER: pooled_features = pooled_features[0] # Discard argmax
         elif self.pooling == 'mean':
             pooled_features = scatter(nbr_features, query_idx, dim=0, dim_size=num_query_nodes, reduce='mean')
         else:
             # Should have been caught in __init__
             raise ValueError(f"Unsupported pooling method: {self.pooling}")
-
         # Apply final fully connected layer to pooled features
         # Note: pooled_features shape is [NumQueryNodes, HiddenDim]
         pointnet_output = self.fc(pooled_features) # [NumQueryNodes, OutputDim]

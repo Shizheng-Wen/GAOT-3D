@@ -49,6 +49,8 @@ class DatasetConfig:
     metaname: str = "gaot-unstructured/drivaernet_pressure"                # Metaname (identifier) for the dataset, used for loading the dataset
     base_path: str = "/cluster/work/math/camlab-data/graphnpde/drivaernet/"# Base path where the dataset is stored
     processed_folder: str = "processed_pyg"                                # Folder name of the saved/processed .pt files
+    active_variables: Optional[List[int]] = None                           # List of active variables to use, if None, use all variables
+    force_recompute_stats: bool = False                                    # Whether to force recomputing the statistics
     use_metadata_stats: bool = False                                       # Whether to use metadata statistics
     sample_rate: float = 0.1                                               # Sampling rate of the dataset
     train_size: int = 5817                                                 # Number of training samples

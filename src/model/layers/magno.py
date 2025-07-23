@@ -3,19 +3,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import radius as pyg_radius # Import radius function
+from torch_geometric.nn import knn as pyg_knn
 from torch_geometric.utils import coalesce
-try:
-    from torch_cluster import knn
-    TORCH_CLUSTER_AVAILABLE = True
-except ImportError:
-    TORCH_CLUSTER_AVAILABLE = False
-    print("Warning: torch_cluster not found. KNN neighbor strategy will not work.")
-
 import torch_geometric as pyg
 
 from typing import Literal, Optional, Tuple
 from dataclasses import dataclass, replace, field
-from typing import Union, Tuple, Optional
+from typing import Union, Tuple, Optional, List, Any
 from .geoembed import GeometricEmbedding
 from .mlp import LinearChannelMLP, ChannelMLP
 from .integral_transform import IntegralTransform
@@ -38,6 +32,8 @@ class MAGNOConfig:
     projection_channels: int = 256                  # Number of channels in the projection MLP
     out_gno_channel_mlp_hidden_layers: list = field(default_factory=lambda: [64, 64]) # Hidden layers in the GNO decoder MLP
     out_gno_transform_type: str = 'linear'          # Transformation type for the GNO decoder MLP
+    # MLP type selection
+    mlp_type: str = 'channel'                       # MLP type to use, supports ['channel', 'linear']. 
     # multiscale aggregation
     scales: list = field(default_factory=lambda: [1.0]) # Scales for multi-scale aggregation
     use_scale_weights: bool = False                     # Whether to use scale weights
@@ -56,7 +52,12 @@ class MAGNOConfig:
     max_neighbors: Optional[int] = None                # Maximum number of neighbors
     sample_ratio: Optional[float] = None               # Sampling ratio
     # neighbor finding strategy
-    neighbor_strategy: str = 'radius'                  # Neighbor finding strategy, supports ['radius', 'knn', 'bidirectional']
+    neighbor_strategy: Any = 'radius'  # Neighbor finding strategy, supports:
+                                       # str: same strategy for both encoder and decoder
+                                       # List[str]: [encoder_strategy, decoder_strategy]
+                                       # Available strategies: ['radius', 'knn', 'bidirectional'] for encoder
+                                       # Available strategies: ['radius', 'knn', 'bidirectional', 'reverse'] for decoder
+    k_neighbors: int = 1                                 # Number of nearest neighbors for knn strategy
     # Dataset
     precompute_edges: bool = True                      # Flag for model to load vs compute edges. This aligns with the update_pt_files_with_edges in DatasetConfig
 
@@ -64,65 +65,207 @@ class MAGNOConfig:
 ############
 # Utils Functions
 ############
+def parse_neighbor_strategy(neighbor_strategy: Union[str, List[str]]) -> Tuple[str, str]:
+    """
+    Parse neighbor_strategy into encoder and decoder strategies.
+    
+    Args:
+        neighbor_strategy: Either a string (same for both) or [encoder_strategy, decoder_strategy]
+        
+    Returns:
+        Tuple[str, str]: (encoder_strategy, decoder_strategy)
+        
+    Examples:
+        parse_neighbor_strategy('radius') -> ('radius', 'radius')
+        parse_neighbor_strategy(['knn', 'bidirectional']) -> ('knn', 'bidirectional')
+    """
+    if isinstance(neighbor_strategy, str):
+        return neighbor_strategy, neighbor_strategy
+    elif isinstance(neighbor_strategy, list) and len(neighbor_strategy) == 2:
+        return neighbor_strategy[0], neighbor_strategy[1]
+    else:
+        raise ValueError(f"neighbor_strategy must be str or list of length 2, got {neighbor_strategy}")
+    
 def get_neighbor_strategy(
     neighbor_strategy: str,
     phys_pos: torch.Tensor,
     batch_idx_phys: torch.Tensor,
     latent_tokens_pos: torch.Tensor,
     batch_idx_latent: torch.Tensor,
-    radius: float):
+    radius: float,
+    k_neighbors: int = 1,
+    is_decoder: bool = False):
     """
     Get the neighbor strategy based on the provided string.
+    
+    For ENCODER (is_decoder=False):
+        - latent tokens are query points, fetching info from physical points
+        - knn: each physical point connects to k nearest latent tokens (phys->latent)
+        - radius: latent tokens as centers, physical points within radius connect (phys->latent)
+        - bidirectional: merge knn and radius strategies
+    
+    For DECODER (is_decoder=True):
+        - physical points are query points, fetching info from latent tokens
+        - knn: each physical point connects to k nearest latent tokens (latent->phys)
+        - radius: physical points as centers, latent tokens within radius connect (latent->phys)
+        - bidirectional: merge knn and radius strategies
+        - reverse: direct inverse of encoder graph
+    
     Args:
-        neighbor_strategy (str): The neighbor strategy to use.
-        phys_pos (Tensor): Physical positions.
-        batch_idx_phys (Tensor): Batch indices for physical positions.
-        latent_tokens_pos (Tensor): Latent token positions.
-        batch_idx_latent (Tensor): Batch indices for latent token positions.
-        radius (float): Radius for neighbor finding.
+        neighbor_strategy (str): Strategy to use ['knn', 'radius', 'bidirectional', 'reverse']
+        phys_pos (Tensor): Physical positions [N_phys, 3]
+        batch_idx_phys (Tensor): Batch indices for physical positions [N_phys]
+        latent_tokens_pos (Tensor): Latent token positions [N_latent, 3]
+        batch_idx_latent (Tensor): Batch indices for latent token positions [N_latent]
+        radius (float): Radius for neighbor finding
+        k_neighbors (int): Number of nearest neighbors for knn strategy
+        is_decoder (bool): Whether this is for decoder graph construction
     Returns:
-        edge_index (Tensor): Edge index for the neighbors.
+        edge_index (Tensor): Edge index [2, N_edges], format depends on encoder/decoder
     """
-    device = phys_pos.device
-    edge_index_fwd, edge_index_rev_swapped = None, None
+    
+    if is_decoder:
+        return _get_decoder_strategy(
+            neighbor_strategy, phys_pos, batch_idx_phys, 
+            latent_tokens_pos, batch_idx_latent, radius, k_neighbors
+        )
+    else:
+        return _get_encoder_strategy(
+            neighbor_strategy, phys_pos, batch_idx_phys,
+            latent_tokens_pos, batch_idx_latent, radius, k_neighbors
+        )
 
+def _get_encoder_strategy(
+    neighbor_strategy: str,
+    phys_pos: torch.Tensor,
+    batch_idx_phys: torch.Tensor,
+    latent_tokens_pos: torch.Tensor,
+    batch_idx_latent: torch.Tensor,
+    radius: float,
+    k_neighbors: int):
+    """
+    Encoder strategies: latent tokens as query points, fetching from physical points
+    Edge direction: physical -> latent (info flows from physical to latent)
+    """ 
+    device = phys_pos.device
+    edge_index_knn = None
+    edge_index_radius = None
+    
+    if neighbor_strategy in ['knn', 'bidirectional']:
+        # Each physical point connects to k nearest latent tokens
+        edge_index_knn = pyg_knn(
+            x=latent_tokens_pos,      
+            y=phys_pos,               
+            k=k_neighbors,            
+            batch_x=batch_idx_latent, 
+            batch_y=batch_idx_phys    
+        ) # Returns [phys_idx, latent_idx] 
+    
     if neighbor_strategy in ['radius', 'bidirectional']:
-        edge_index_fwd = pyg_radius(
-            x=phys_pos,               # Source = physical
-            y=latent_tokens_pos,      # Query = latent
+        # Latent tokens as centers, find physical points within radius
+        edge_index_radius_raw = pyg_radius(
+            x=phys_pos,               
+            y=latent_tokens_pos,      
             r=radius,
             batch_x=batch_idx_phys,
             batch_y=batch_idx_latent,
-            max_num_neighbors=1000 
-        )
+            max_num_neighbors=50000
+        ) # Returns [latent_idx, phys_idx]
+        edge_index_radius = edge_index_radius_raw.flip(0)
+    # Combine strategies
+    if neighbor_strategy == 'knn':
+        return edge_index_knn if edge_index_knn is not None else torch.empty((2,0), dtype=torch.long, device=device)
+    elif neighbor_strategy == 'radius':
+        return edge_index_radius if edge_index_radius is not None else torch.empty((2,0), dtype=torch.long, device=device)
+    elif neighbor_strategy == 'bidirectional':
+        edges = []
+        if edge_index_knn is not None:
+            edges.append(edge_index_knn)
+        if edge_index_radius is not None:
+            edges.append(edge_index_radius)
+        
+        if len(edges) == 0:
+            return torch.empty((2,0), dtype=torch.long, device=device)
+        elif len(edges) == 1:
+            return edges[0]
+        else:
+            combined = torch.cat(edges, dim=1)
+            return coalesce(combined)  # Remove duplicates and sort
+    else:
+        raise ValueError(f"Unknown encoder strategy: {neighbor_strategy}")
+
+def _get_decoder_strategy(
+    neighbor_strategy: str,
+    phys_pos: torch.Tensor,
+    batch_idx_phys: torch.Tensor,
+    latent_tokens_pos: torch.Tensor,
+    batch_idx_latent: torch.Tensor,
+    radius: float,
+    k_neighbors: int):
+    """
+    Decoder strategies: physical points as query points, fetching from latent tokens
+    Edge direction: latent -> physical (info flows from latent to physical)
+    """
+    device = phys_pos.device
+    edge_index_knn = None
+    edge_index_radius = None
     
     if neighbor_strategy in ['knn', 'bidirectional']:
-        # For each physical point (y), find nearest latent token (x)
-        edge_index_rev = knn(
-            x=latent_tokens_pos,      # Data points to search within (latent)
-            y=phys_pos,               # Query points (physical)
-            k=1,
-            batch_x=batch_idx_latent, # Batch index for data points
-            batch_y=batch_idx_phys    # Batch index for query points
-        ) # Returns [2, TotalPhysicalNodes] where row 0=phys_idx, row 1=latent_idx
-
-        # Swap the order of the edge_index to match the forward direction
-        edge_index_rev_swapped = edge_index_rev.flip(0) # Swap the order of the edges
-        # edge_index_rev_swapped = edge_index_rev[[1, 0], :]
-
-    # --- Combine the edge indices based on the strategy ---
-    if neighbor_strategy == 'radius':
-        return edge_index_fwd if edge_index_fwd is not None else torch.empty((2,0), dtype=torch.long, device=device)
-    elif neighbor_strategy == 'knn':
-        return edge_index_rev_swapped if edge_index_rev_swapped is not None else torch.empty((2,0), dtype=torch.long, device=device)
+        # Each physical point connects to k nearest latent tokens
+        edge_index_knn_raw = pyg_knn(
+            x=latent_tokens_pos,      
+            y=phys_pos,               
+            k=k_neighbors,            
+            batch_x=batch_idx_latent, 
+            batch_y=batch_idx_phys    
+        ) # Returns [phys_idx, latent_idx]
+        edge_index_knn = edge_index_knn_raw.flip(0) # [latent_idx, phys_idx]
+    
+    if neighbor_strategy in ['radius', 'bidirectional']:
+        # Physical points as centers, find latent tokens within radius
+        edge_index_radius_raw = pyg_radius(
+            x=latent_tokens_pos,      
+            y=phys_pos,               
+            r=radius,
+            batch_x=batch_idx_latent,
+            batch_y=batch_idx_phys,
+            #max_num_neighbors=50000
+        ) # Returns [phys_idx, latent_idx]
+        edge_index_radius = edge_index_radius_raw.flip(0)
+    
+    if neighbor_strategy == 'reverse':
+        # Use the reverse of encoder graph
+        # Get encoder graph and flip edge direction
+        encoder_edges = _get_encoder_strategy(
+            'bidirectional',  # Use bidirectional as default for reverse
+            phys_pos, batch_idx_phys,
+            latent_tokens_pos, batch_idx_latent,
+            radius, k_neighbors
+        )
+        # Encoder gives [phys_idx, latent_idx], we want [latent_idx, phys_idx]
+        return encoder_edges.flip(0)
+    
+    # Combine strategies
+    if neighbor_strategy == 'knn':
+        return edge_index_knn if edge_index_knn is not None else torch.empty((2,0), dtype=torch.long, device=device)
+    elif neighbor_strategy == 'radius':
+        return edge_index_radius if edge_index_radius is not None else torch.empty((2,0), dtype=torch.long, device=device)
     elif neighbor_strategy == 'bidirectional':
-        if edge_index_fwd is None: edge_index_fwd = torch.empty((2,0), dtype=torch.long, device=device)
-        if edge_index_rev_swapped is None: edge_index_rev_swapped = torch.empty((2,0), dtype=torch.long, device=device)
-        combined = torch.cat([edge_index_fwd, edge_index_rev_swapped], dim=1)
-        # Coalesce removes duplicates and sorts
-        return coalesce(combined)
+        edges = []
+        if edge_index_knn is not None:
+            edges.append(edge_index_knn)
+        if edge_index_radius is not None:
+            edges.append(edge_index_radius)
+        
+        if len(edges) == 0:
+            return torch.empty((2,0), dtype=torch.long, device=device)
+        elif len(edges) == 1:
+            return edges[0]
+        else:
+            combined = torch.cat(edges, dim=1)
+            return coalesce(combined)  # Remove duplicates and sort
     else:
-            raise ValueError(f"Unknown neighbor strategy: {neighbor_strategy}")
+        raise ValueError(f"Unknown decoder strategy: {neighbor_strategy}")
 
 
 ############
@@ -137,11 +280,11 @@ class GNOEncoder(nn.Module):
         self.coord_dim = gno_config.gno_coord_dim
         self.feature_attr_name = gno_config.encoder_feature_attr
         self.precompute_edges = gno_config.precompute_edges
+        self.mlp_type = gno_config.mlp_type
 
         # --- Store Neighbor Finding Strategy ---
-        self.neighbor_strategy = gno_config.neighbor_strategy
-        if self.neighbor_strategy in ['knn', 'bidirectional'] and not TORCH_CLUSTER_AVAILABLE:
-            raise ImportError(f"torch_cluster is required for neighbor_strategy='{self.neighbor_strategy}'")
+        self.encoder_strategy, self.decoder_strategy = parse_neighbor_strategy(gno_config.neighbor_strategy)
+        self.k_neighbors = gno_config.k_neighbors
         # --- Init GNO Layer ---
 
         ## --- Calculate MLP input dimension ---
@@ -168,11 +311,16 @@ class GNOEncoder(nn.Module):
             )
 
             ## --- Init Lifting MLP ---
-            self.lifting = ChannelMLP(
-                in_channels=in_channels,
-                out_channels=self.lifting_channels, # Output matches GNO kernel output
-                n_layers=1
-            )
+            if gno_config.mlp_type == 'linear':
+                self.lifting = LinearChannelMLP(
+                    layers=[in_channels, self.lifting_channels]
+                )
+            else:
+                self.lifting = ChannelMLP(
+                    in_channels=in_channels,
+                    out_channels=self.lifting_channels, # Output matches GNO kernel output
+                    n_layers=1
+                )
         else:
             self.gno = None
             self.lifting = None
@@ -188,11 +336,16 @@ class GNOEncoder(nn.Module):
                 method=gno_config.embedding_method,
                 pooling=gno_config.pooling
             )
-            self.recovery = ChannelMLP(
-                in_channels=2 * self.lifting_channels,
-                out_channels=self.lifting_channels,
-                n_layers=1
-            )
+            if gno_config.mlp_type == 'linear':
+                self.recovery = LinearChannelMLP(
+                    layers=[2 * self.lifting_channels, self.lifting_channels]
+                )
+            else:
+                self.recovery = ChannelMLP(
+                    in_channels=2 * self.lifting_channels,
+                    out_channels=self.lifting_channels,
+                    n_layers=1
+                )
         
         # --- Init Scale Weighting (optional) ---
         self.use_scale_weights = gno_config.use_scale_weights
@@ -226,7 +379,6 @@ class GNOEncoder(nn.Module):
         if phys_feat is None:
             if self.use_gno:
                 raise AttributeError(f"GNOEncoder requires feature attribute '{self.feature_attr_name}' but it was not found in the batch.")
-
         # --- Multi-Scale GNO encoding ---
         encoded_scales = []
         for scale_idx, scale in enumerate(self.scales):
@@ -245,19 +397,25 @@ class GNOEncoder(nn.Module):
                     neighbor_counts = neighbor_counts.to(device)
             else:
                 edge_index = get_neighbor_strategy(
-                    neighbor_strategy = self.neighbor_strategy,
+                    neighbor_strategy = self.encoder_strategy,  # Use encoder-specific strategy
                     phys_pos = phys_pos,               # Source = physical
                     batch_idx_phys = batch_idx_phys,        # Batch indices for physical
                     latent_tokens_pos = latent_tokens_pos,      # Query = latent
                     batch_idx_latent = latent_tokens_batch_idx, # Batch indices for latent
-                    radius = scaled_radius
+                    radius = scaled_radius,
+                    k_neighbors = self.k_neighbors,                   #
+                    is_decoder = False                 # This is encoder
                 )
                 neighbor_counts = None
             # --- Conditional GNO Path ---
             if self.use_gno:
                 ## --- Lifting MLP ---
-                ## ChannelMLP expects [B, C, N] or [C, N*B], using latter
-                phys_feat_lifted = self.lifting(phys_feat.transpose(0, 1)).transpose(0, 1) # [TotalNodes_phys, C_lifted]
+                if self.mlp_type == 'linear':
+                    # LinearChannelMLP expects [N, C]
+                    phys_feat_lifted = self.lifting(phys_feat) # [TotalNodes_phys, C_lifted]
+                else:
+                    # ChannelMLP expects [C, N]
+                    phys_feat_lifted = self.lifting(phys_feat.transpose(0, 1)).transpose(0, 1) # [TotalNodes_phys, C_lifted]
                 encoded_gno = self.gno(
                     y_pos=phys_pos,           # Source coords (physical)
                     x_pos=latent_tokens_pos, # Query coords (latent)
@@ -284,7 +442,12 @@ class GNOEncoder(nn.Module):
             # --- Combine GNO and GeoEmbed ---
             if self.use_gno and self.use_geoembed:
                 combined = torch.cat([encoded_gno, geo_embedding], dim=-1)
-                encoded_unpatched = self.recovery(combined.permute(1,0)).permute(1,0) # Apply recovery MLP
+                if self.mlp_type == 'linear':
+                    # LinearChannelMLP expects [N, C]
+                    encoded_unpatched = self.recovery(combined) # Apply recovery MLP
+                else:
+                    # ChannelMLP expects [C, N]
+                    encoded_unpatched = self.recovery(combined.permute(1,0)).permute(1,0) # Apply recovery MLP
             elif self.use_gno:
                 encoded_unpatched = encoded_gno
             elif self.use_geoembed:
@@ -332,11 +495,11 @@ class GNODecoder(nn.Module):
         self.use_geoembed = gno_config.use_geoembed 
         self.use_scale_weights = gno_config.use_scale_weights
         self.precompute_edges = gno_config.precompute_edges # store flag
+        self.mlp_type = gno_config.mlp_type
 
         # --- Store Neighbor Strategy ---
-        self.neighbor_strategy = gno_config.neighbor_strategy
-        if self.neighbor_strategy in ['knn', 'bidirectional'] and not TORCH_CLUSTER_AVAILABLE:
-            raise ImportError(f"torch_cluster is required for neighbor_strategy='{self.neighbor_strategy}'")
+        self.encoder_strategy, self.decoder_strategy = parse_neighbor_strategy(gno_config.neighbor_strategy)
+        self.k_neighbors = gno_config.k_neighbors
         # ---
 
         # --- Calculate MLP input dimension ---
@@ -362,13 +525,18 @@ class GNODecoder(nn.Module):
         )
 
         # --- Init Projection ---
-        self.projection = ChannelMLP(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            hidden_channels=gno_config.projection_channels,
-            n_layers=2,
-            n_dim=1,
-        )
+        if gno_config.mlp_type == 'linear':
+            self.projection = LinearChannelMLP(
+                layers=[in_channels, gno_config.projection_channels, out_channels]
+            )
+        else:
+            self.projection = ChannelMLP(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                hidden_channels=gno_config.projection_channels,
+                n_layers=2,
+                n_dim=1,
+            )
 
         # --- Init GeoEmbed (Optional) ---
         if self.use_geoembed:
@@ -379,11 +547,16 @@ class GNODecoder(nn.Module):
                 method=gno_config.embedding_method,
                 pooling=gno_config.pooling
             )
-            self.recovery = ChannelMLP(
-                in_channels=2 * in_channels,
-                out_channels=in_channels,
-                n_layers=1
-            )
+            if gno_config.mlp_type == 'linear':
+                self.recovery = LinearChannelMLP(
+                    layers=[2 * in_channels, in_channels]
+                )
+            else:
+                self.recovery = ChannelMLP(
+                    in_channels=2 * in_channels,
+                    out_channels=in_channels,
+                    n_layers=1
+                )
 
 
         # --- Init Scale Weighting (Optional) ---
@@ -433,12 +606,14 @@ class GNODecoder(nn.Module):
                     neighbor_counts = neighbor_counts.to(device)
             else:
                 edge_index = get_neighbor_strategy(
-                    neighbor_strategy = self.neighbor_strategy,
-                    phys_pos = latent_tokens_pos,             # Source = latent
-                    batch_idx_phys = latent_tokens_batch_idx, # Batch indices for latent
-                    latent_tokens_pos = phys_pos_query,       # Query = physical
-                    batch_idx_latent = batch_idx_phys_query,  # Batch indices for physical
-                    radius = scaled_radius
+                    neighbor_strategy = self.decoder_strategy,  # Use decoder-specific strategy
+                    phys_pos = phys_pos_query,                  # Physical nodes (query points)
+                    batch_idx_phys = batch_idx_phys_query,      # Batch indices for physical
+                    latent_tokens_pos = latent_tokens_pos,      # Latent tokens (data points)
+                    batch_idx_latent = latent_tokens_batch_idx, # Batch indices for latent
+                    radius = scaled_radius,
+                    k_neighbors = self.k_neighbors,           
+                    is_decoder = True                         
                 )
                 neighbor_counts = None
 
@@ -454,18 +629,23 @@ class GNODecoder(nn.Module):
 
             # --- GeoEmbed (Optional) ---
             if self.use_geoembed:
-                 # Geoembed needs latent_tokens_batched as input_geom, phys_pos as query points
-                 geoembedding = self.geoembed(
+                # Geoembed needs latent_tokens_batched as input_geom, phys_pos as query points
+                geoembedding = self.geoembed(
                     source_pos = latent_tokens_pos,
                     query_pos = phys_pos_query,
                     edge_index = edge_index, # If needed
                     batch_source = latent_tokens_batch_idx,
                     batch_query = batch_idx_phys_query,
                     neighbors_counts = neighbor_counts # Optional neighbor counts for GeoEmbed
-                 ) # Output shape: [TotalNodes_phys, C_in]
-                 combined = torch.cat([decoded_unpatched, geoembedding], dim=-1)
-                 # Apply recovery MLP 
-                 decoded_unpatched = self.recovery(combined.permute(1,0)).permute(1,0) # Output: [TotalNodes_phys, C_in]
+                ) # Output shape: [TotalNodes_phys, C_in]
+                combined = torch.cat([decoded_unpatched, geoembedding], dim=-1)
+                # Apply recovery MLP 
+                if self.mlp_type == 'linear':
+                    # LinearChannelMLP expects [N, C]
+                    decoded_unpatched = self.recovery(combined) # Output: [TotalNodes_phys, C_in]
+                else:
+                    # ChannelMLP expects [C, N]
+                    decoded_unpatched = self.recovery(combined.permute(1,0)).permute(1,0) # Output: [TotalNodes_phys, C_in]
 
             decoded_scales.append(decoded_unpatched) # List of [TotalNodes_phys, C_in]
 
@@ -486,6 +666,11 @@ class GNODecoder(nn.Module):
 
         # --- Final Projection ---
         # Input shape [TotalNodes_phys, C_in]
-        decoded_data = decoded_data.permute(1,0)
-        decoded_data = self.projection(decoded_data).permute(1,0) # Output shape [TotalNodes_phys, C_out] 
+        if self.mlp_type == 'linear':
+            # LinearChannelMLP expects [N, C]
+            decoded_data = self.projection(decoded_data) # Output shape [TotalNodes_phys, C_out]
+        else:
+            # ChannelMLP expects [C, N]
+            decoded_data = decoded_data.permute(1,0) # [C_in, TotalNodes_phys]
+            decoded_data = self.projection(decoded_data).permute(1,0) # Output shape [TotalNodes_phys, C_out] 
         return decoded_data

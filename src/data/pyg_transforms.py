@@ -56,22 +56,34 @@ class RescalePositionNew(BaseTransform):
 
 
 class NormalizeFeatures(BaseTransform):
-    """Normalizes node features 'x' using pre-computed mean and std."""
-    def __init__(self, mean: torch.Tensor, std: torch.Tensor):
+    """Normalizes node features 'x' and optionally 'c' using pre-computed mean and std."""
+    def __init__(self, mean: torch.Tensor, std: torch.Tensor, c_mean: torch.Tensor = None, c_std: torch.Tensor = None):
         self.mean = mean.detach()
         self.std = std.detach()
+        
+        # Optional normalization for c field
+        self.c_mean = c_mean.detach() if c_mean is not None else None
+        self.c_std = c_std.detach() if c_std is not None else None
 
     def __call__(self, data: Data) -> Data:
+        # Normalize x field
         if hasattr(data, 'x') and data.x is not None:
             mean_dev = self.mean.to(data.x.device)
             std_dev = self.std.to(data.x.device)
-
             data.x = (data.x - mean_dev) / (std_dev + EPSILON) # Add epsilon for safety
         else:
             print("Warning: NormalizeFeatures transform called but data has no 'x' attribute.")
+        
+        # Normalize c field if both c field and c statistics exist
+        if hasattr(data, 'c') and data.c is not None and self.c_mean is not None and self.c_std is not None:
+            c_mean_dev = self.c_mean.to(data.c.device)
+            c_std_dev = self.c_std.to(data.c.device)
+            data.c = (data.c - c_mean_dev) / (c_std_dev + EPSILON) # Add epsilon for safety
+            
         return data
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__}(mean=..., std=...)'
+        has_c = self.c_mean is not None and self.c_std is not None
+        return f'{self.__class__.__name__}(mean=..., std=..., has_c_norm={has_c})'
 
 

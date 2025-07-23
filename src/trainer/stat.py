@@ -49,6 +49,16 @@ class StaticTrainer3D(TrainerBase):
             stats = torch.load(stats_file)
             self.u_mean = stats['mean'].to(self.dtype)
             self.u_std = stats['std'].to(self.dtype)
+            print(f"Loaded x - Mean: {self.u_mean}, Std: {self.u_std}")
+            
+            # Load c statistics if they exist
+            if 'c_mean' in stats and 'c_std' in stats:
+                self.c_mean = stats['c_mean'].to(self.dtype)
+                self.c_std = stats['c_std'].to(self.dtype)
+                print(f"Loaded c - Mean: {self.c_mean}, Std: {self.c_std}")
+            else:
+                self.c_mean = None
+                self.c_std = None
         else:
             print("Calculating normalization statistics from training set...")
             # Need to instantiate a temporary dataset for the training split *without* normalization
@@ -64,31 +74,182 @@ class StaticTrainer3D(TrainerBase):
             temp_loader = PyGDataLoader(temp_train_dataset, batch_size=dataset_config.batch_size, shuffle=False, num_workers=4) # Use 0 workers for simplicity here
 
             all_x = []
+            all_c = []
+            has_c_field = False
+            
             for batch in tqdm(temp_loader, desc="Calculating Stats"):
                 # Collect all 'x' features from the training set
                 # Be mindful of memory for large datasets!
                 all_x.append(batch.x.cpu()) # Move to CPU to avoid GPU memory buildup
+                
+                # Also collect 'c' features if they exist
+                if hasattr(batch, 'c') and batch.c is not None:
+                    all_c.append(batch.c.cpu())
+                    has_c_field = True
 
             if not all_x:
                  raise ValueError("No data found in training set to calculate statistics.")
 
+            # Calculate x statistics
             full_x_tensor = torch.cat(all_x, dim=0)
-            # Calculate mean/std over all nodes/samples in training set (dimension 0)
-            # Assuming features are [TotalNodes, NumFeatures]
-            
             self.u_mean = torch.mean(full_x_tensor, dim=0, dtype=self.dtype)
             self.u_std = torch.std(full_x_tensor, dim=0).to(self.dtype)
 
-            print(f"Calculated - Mean: {self.u_mean}, Std: {self.u_std}")
+            # Calculate c statistics if c field exists
+            if has_c_field and all_c:
+                full_c_tensor = torch.cat(all_c, dim=0)
+                self.c_mean = torch.mean(full_c_tensor, dim=0, dtype=self.dtype)
+                self.c_std = torch.std(full_c_tensor, dim=0).to(self.dtype)
+                print(f"Calculated c - Mean: {self.c_mean}, Std: {self.c_std}")
+            else:
+                self.c_mean = None
+                self.c_std = None
+
+            print(f"Calculated x - Mean: {self.u_mean}, Std: {self.u_std}")
             # Save calculated stats
             print(f"Saving normalization stats to {stats_file}")
             os.makedirs(os.path.dirname(stats_file), exist_ok=True)
-            torch.save({'mean': self.u_mean, 'std': self.u_std}, stats_file)
+            
+            stats_to_save = {'mean': self.u_mean, 'std': self.u_std}
+            if self.c_mean is not None:
+                stats_to_save['c_mean'] = self.c_mean
+                stats_to_save['c_std'] = self.c_std
+            torch.save(stats_to_save, stats_file)
         # Ensure stats are available and have correct type
         if self.u_mean is None or self.u_std is None:
              raise RuntimeError("Normalization mean/std could not be calculated or loaded.")
         self.u_mean = self.u_mean.to(self.dtype)
         self.u_std = self.u_std.to(self.dtype)
+   
+    def __update_pt_files_with_edges(self, dataset_config, order_file_path, gno_config, downsample_nodes=8200000):
+        """
+        Iterates through processed .pt files, computes edges (and optionally counts),
+        and saves them back to the files. Runs ONLY on rank 0 in DDP.
+        
+        Args:
+            downsample_nodes (int, optional): If specified, downsample to this many nodes
+        """
+        if self.setup_config.rank != 0:
+            return
+        
+        processed_dir = os.path.join(dataset_config.base_path, dataset_config.processed_folder)
+        if not os.path.isdir(processed_dir):
+             raise FileNotFoundError(f"Processed directory for update not found: {processed_dir}")
+        
+        with open(order_file_path, 'r') as f:
+            all_filenames_base = [line.strip() for line in f if line.strip()]
+        total_samples = len(all_filenames_base)
+        train_size = dataset_config.train_size
+        val_size = dataset_config.val_size
+        # Test size calculation depends on how split was done previously
+        test_size = dataset_config.test_size
+        indices = np.arange(total_samples) 
+        # Note: rand_dataset shuffling is NOT applied here, we process based on original order file names
+        train_indices = indices[:train_size]
+        val_indices = indices[train_size : train_size + val_size]
+        test_indices = indices[-test_size:] 
+        relevant_indices = np.concatenate([train_indices, val_indices, test_indices])
+        filenames_to_process = [f"{all_filenames_base[i]}.pt" for i in relevant_indices]
+
+        downsample_info = f" (下采样到 {downsample_nodes:,} 节点)" if downsample_nodes else ""
+        print(f"Rank 0: Checking/Updating {len(filenames_to_process)} '.pt' files in {processed_dir} with edge information{downsample_info}...")
+
+        latent_tokens_cpu = self.latent_tokens.cpu()
+        num_latent_tokens = latent_tokens_cpu.shape[0]
+
+        from src.model.layers.magno import get_neighbor_strategy, parse_neighbor_strategy
+        for filename in tqdm(filenames_to_process, desc="Updating .pt files"):
+            fpath = os.path.join(processed_dir, filename)
+            fpath_tmp = fpath + ".tmp"
+            try:
+                data_old = torch.load(fpath, map_location='cpu')
+                
+                # 应用下采样（如果指定）
+                pos_original = data_old.pos
+                x_original = data_old.x
+                
+                if downsample_nodes and pos_original.shape[0] > downsample_nodes:
+                    print(f"  下采样 {filename}: {pos_original.shape[0]:,} -> {downsample_nodes:,} 节点")
+                    # 随机采样节点索引
+                    total_nodes = pos_original.shape[0]
+                    # 使用固定种子确保可重现性
+                    torch.manual_seed(42)
+                    sampled_indices = torch.randperm(total_nodes)[:downsample_nodes]
+                    sampled_indices = sampled_indices.sort()[0]  # 保持索引顺序
+                    
+                    # 应用采样
+                    pos_sampled = pos_original[sampled_indices]
+                    x_sampled = x_original[sampled_indices]
+                    
+                    print(f"    采样前: pos={pos_original.shape}, x={x_original.shape}")
+                    print(f"    采样后: pos={pos_sampled.shape}, x={x_sampled.shape}")
+                    
+                    data = EnrichedData(pos=pos_sampled, x=x_sampled)
+                else:
+                    data = EnrichedData(pos=pos_original, x=x_original)
+                
+                # 复制其他属性（除了pos和x）
+                for attr, value in data_old:
+                     if attr not in ['pos', 'x']: 
+                         setattr(data, attr, value)
+                data.num_latent_nodes = num_latent_tokens
+                
+                if dataset_config.use_rescale_new:
+                    phys_pos = rescale_new(data.pos.to(torch.float), (-1, 1), self.metadata.domain_x)
+                else:
+                    phys_pos = rescale(data.pos.to(torch.float), (-1, 1)) # Rescale to [-1, 1], very important!
+                num_physical_nodes = phys_pos.shape[0]
+                batch_idx_phys = torch.zeros(num_physical_nodes, dtype=torch.long)
+                batch_idx_latent = torch.zeros(num_latent_tokens, dtype=torch.long)
+
+                for scale_idx, scale in enumerate(gno_config.scales):
+                    scaled_radius = gno_config.gno_radius * scale
+                    # --- Parse neighbor strategy ---
+                    encoder_strategy, decoder_strategy = parse_neighbor_strategy(gno_config.neighbor_strategy)
+                    # --- Encoder Edges ---
+                    enc_edge_index = get_neighbor_strategy(
+                        neighbor_strategy=encoder_strategy,
+                        phys_pos = phys_pos,
+                        batch_idx_phys = batch_idx_phys,
+                        latent_tokens_pos = latent_tokens_cpu,
+                        batch_idx_latent = batch_idx_latent,
+                        radius=scaled_radius,
+                        k_neighbors=gno_config.k_neighbors,                  
+                        is_decoder=False                 
+                    ).to(torch.int32)
+                    setattr(data, f'encoder_edge_index_s{scale_idx}', enc_edge_index)
+                    if enc_edge_index.numel() > 0:
+                        enc_counts = torch.bincount(enc_edge_index[1], minlength=num_latent_tokens).to(torch.int32)
+                    else:
+                        enc_counts = torch.zeros(num_latent_tokens, dtype=torch.int32)
+                    setattr(data, f'encoder_query_counts_s{scale_idx}', enc_counts)
+                    # --- Decoder Edges ---
+                    dec_edge_index = get_neighbor_strategy(
+                        neighbor_strategy=decoder_strategy,
+                        phys_pos = phys_pos,             
+                        batch_idx_phys = batch_idx_phys, 
+                        latent_tokens_pos = latent_tokens_cpu, 
+                        batch_idx_latent = batch_idx_latent,   
+                        radius=scaled_radius,
+                        k_neighbors=gno_config.k_neighbors, 
+                        is_decoder=True                  
+                    ).to(torch.int32)
+                    setattr(data, f'decoder_edge_index_s{scale_idx}', dec_edge_index)
+                    if dec_edge_index.numel() > 0:
+                        dec_counts = torch.bincount(dec_edge_index[1], minlength=num_physical_nodes).to(torch.int32)
+                    else:
+                        dec_counts = torch.zeros(num_physical_nodes, dtype=torch.int32)
+                    setattr(data, f'decoder_query_counts_s{scale_idx}', dec_counts)
+                # --- Save updated data ---
+                torch.save(data, fpath_tmp)
+                os.replace(fpath_tmp, fpath)
+            except FileNotFoundError:
+                print(f"Warning: File not found during update: {fpath}")
+            except Exception as e:
+                print(f"Error processing file {fpath}: {e}")
+                if os.path.exists(fpath_tmp):
+                     os.remove(fpath_tmp)
+        print(f"Rank 0: Finished checking/updating '.pt' files.")
    
     def _update_pt_files_with_edges(self, dataset_config, order_file_path, gno_config):
         """
@@ -123,7 +284,7 @@ class StaticTrainer3D(TrainerBase):
         latent_tokens_cpu = self.latent_tokens.cpu()
         num_latent_tokens = latent_tokens_cpu.shape[0]
 
-        from src.model.layers.magno import get_neighbor_strategy
+        from src.model.layers.magno import get_neighbor_strategy, parse_neighbor_strategy
         for filename in tqdm(filenames_to_process, desc="Updating .pt files"):
             fpath = os.path.join(processed_dir, filename)
             fpath_tmp = fpath + ".tmp"
@@ -144,33 +305,40 @@ class StaticTrainer3D(TrainerBase):
 
                 for scale_idx, scale in enumerate(gno_config.scales):
                     scaled_radius = gno_config.gno_radius * scale
+                    # --- Parse neighbor strategy ---
+                    encoder_strategy, decoder_strategy = parse_neighbor_strategy(gno_config.neighbor_strategy)
+                    
                     # --- Encoder Edges ---
                     enc_edge_index = get_neighbor_strategy(
-                        neighbor_strategy=gno_config.neighbor_strategy,
+                        neighbor_strategy=encoder_strategy,
                         phys_pos = phys_pos,
                         batch_idx_phys = batch_idx_phys,
                         latent_tokens_pos = latent_tokens_cpu,
                         batch_idx_latent = batch_idx_latent,
-                        radius=scaled_radius
+                        radius=scaled_radius,
+                        k_neighbors=gno_config.k_neighbors,                 
+                        is_decoder=False                
                     ).to(torch.int32)
                     setattr(data, f'encoder_edge_index_s{scale_idx}', enc_edge_index)
                     if enc_edge_index.numel() > 0:
-                        enc_counts = torch.bincount(enc_edge_index[0], minlength=num_latent_tokens).to(torch.int32)
+                        enc_counts = torch.bincount(enc_edge_index[1], minlength=num_latent_tokens).to(torch.int32)
                     else:
                         enc_counts = torch.zeros(num_latent_tokens, dtype=torch.int32)
                     setattr(data, f'encoder_query_counts_s{scale_idx}', enc_counts)
                     # --- Decoder Edges ---
                     dec_edge_index = get_neighbor_strategy(
-                        neighbor_strategy=gno_config.neighbor_strategy,
-                        phys_pos = latent_tokens_cpu,
-                        batch_idx_phys = batch_idx_latent,
-                        latent_tokens_pos = phys_pos,
-                        batch_idx_latent = batch_idx_phys,
-                        radius=scaled_radius
+                        neighbor_strategy=decoder_strategy,
+                        phys_pos = phys_pos,             
+                        batch_idx_phys = batch_idx_phys, 
+                        latent_tokens_pos = latent_tokens_cpu, 
+                        batch_idx_latent = batch_idx_latent,   
+                        radius=scaled_radius,
+                        k_neighbors=gno_config.k_neighbors, 
+                        is_decoder=True                  
                     ).to(torch.int32)
                     setattr(data, f'decoder_edge_index_s{scale_idx}', dec_edge_index)
                     if dec_edge_index.numel() > 0:
-                        dec_counts = torch.bincount(dec_edge_index[0], minlength=num_physical_nodes).to(torch.int32)
+                        dec_counts = torch.bincount(dec_edge_index[1], minlength=num_physical_nodes).to(torch.int32)
                     else:
                         dec_counts = torch.zeros(num_physical_nodes, dtype=torch.int32)
                     setattr(data, f'decoder_query_counts_s{scale_idx}', dec_counts)
@@ -184,12 +352,12 @@ class StaticTrainer3D(TrainerBase):
                 if os.path.exists(fpath_tmp):
                      os.remove(fpath_tmp)
         print(f"Rank 0: Finished checking/updating '.pt' files.")
-            
+        
     def init_dataset(self, dataset_config):
         print("Initializing PyG dataset ...")  
         self.latent_token_size = self.model_config.args.latent_tokens
         data_root = dataset_config.base_path
-        order_file_path = os.path.join(data_root, "order_use.txt")
+        order_file_path = os.path.join(data_root, f"order_{dataset_config.processed_folder}.txt")
         processed_data_path = os.path.join(data_root, dataset_config.processed_folder)
 
         if not os.path.exists(processed_data_path):
@@ -232,19 +400,37 @@ class StaticTrainer3D(TrainerBase):
             self.model_config.args.magno.precompute_edges = True
             print(f"Rank {self.setup_config.rank}: Set model config to use precomputed edges.")
 
-        # --- end Pre-computation /Update Step ---
-            
+        # --- end Pre-computation /Update Step --- 
         # --- Calculate or Load Normalization Stats ---
         self._calculate_or_load_stats(dataset_config, order_file_path, data_root)
-        
-
         # --- Define Transforms ---
         if dataset_config.use_rescale_new:
             rescale_transform = RescalePositionNew(lims=(-1., 1.), phy_domain = phy_domain)
         else:
             rescale_transform = RescalePosition(lims=(-1., 1.))
         
-        normalize_transform = NormalizeFeatures(mean=self.u_mean, std=self.u_std)
+        # Apply active_variables selection to normalization stats if specified
+        if dataset_config.active_variables is not None:
+            mean_for_norm = self.u_mean[dataset_config.active_variables]
+            std_for_norm = self.u_std[dataset_config.active_variables]
+        else:
+            mean_for_norm = self.u_mean
+            std_for_norm = self.u_std
+        
+        # Prepare c normalization stats if they exist
+        c_mean_for_norm = None
+        c_std_for_norm = None
+        if self.c_mean is not None and self.c_std is not None:
+            # Note: c field doesn't use active_variables selection since it's input features
+            c_mean_for_norm = self.c_mean
+            c_std_for_norm = self.c_std
+        
+        normalize_transform = NormalizeFeatures(
+            mean=mean_for_norm, 
+            std=std_for_norm,
+            c_mean=c_mean_for_norm, 
+            c_std=c_std_for_norm
+        )
         composed_transform = Compose([rescale_transform, normalize_transform])
 
         if self.setup_config.train:
@@ -272,8 +458,7 @@ class StaticTrainer3D(TrainerBase):
             split="test",
             transform = composed_transform
         )
-
-        self.num_input_channels = test_ds[0].pos.shape[1]
+        self.num_input_channels = test_ds[0].c.shape[1] if hasattr(test_ds[0], 'c') else test_ds[0].pos.shape[1]
         self.num_output_channels = test_ds[0].x.shape[1]
         
         # --- Create DataLoaders ---
@@ -296,7 +481,7 @@ class StaticTrainer3D(TrainerBase):
                 shuffle=False if train_sampler is not None else dataset_config.shuffle,
                 num_workers=dataset_config.num_workers,
                 sampler=train_sampler,
-                pin_memory=True, # Good practice if using GPU
+                pin_memory=False, # Good practice if using GPU
                 drop_last=train_sampler is not None 
             )
 
@@ -308,7 +493,7 @@ class StaticTrainer3D(TrainerBase):
                 batch_size=dataset_config.batch_size,
                 shuffle=False,
                 num_workers=dataset_config.num_workers,
-                pin_memory=True,
+                pin_memory=False,
                 sampler=val_sampler
             )
 
@@ -320,7 +505,7 @@ class StaticTrainer3D(TrainerBase):
             batch_size=dataset_config.batch_size,
             shuffle=False,
             num_workers=dataset_config.num_workers,
-            pin_memory=True,
+            pin_memory=False,
             sampler=test_sampler
         )
 
@@ -392,8 +577,8 @@ class StaticTrainer3D(TrainerBase):
                 target_norm = batch.x
 
                 # De-normalize predictions and targets
-                u_std_dev = self.u_std.to(self.device)
-                u_mean_dev = self.u_mean.to(self.device)
+                u_std_dev = self.u_std[self.dataset_config.active_variables].to(self.device)
+                u_mean_dev = self.u_mean[self.dataset_config.active_variables].to(self.device)
                 pred_de_norm = pred_norm * u_std_dev + u_mean_dev
                 target_de_norm = target_norm * u_std_dev + u_mean_dev
 
@@ -439,8 +624,8 @@ class StaticTrainer3D(TrainerBase):
                 print(f"MAE (x10^-1):       {agg_metrics['MAE'] * 10:.4f}")
                 print(f"RMSE:               {agg_metrics['RMSE']:.4f}")
                 print(f"Max_Error:          {agg_metrics['Max_Error']:.4f}")
-                print(f"Rel L2 Error (%):   {agg_metrics['Rel_L2']:.4f}")
-                print(f"Rel L1 Error (%):   {agg_metrics['Rel_L1']:.4f}")
+                print(f"Rel L2 Error (%):   {agg_metrics['Rel_L2'] * 100:.4f}")
+                print(f"Rel L1 Error (%):   {agg_metrics['Rel_L1'] * 100:.4f}")
 
             elif metric_suite == "general":
                 # Calculate general metrics on the full concatenated tensors
@@ -489,7 +674,8 @@ class StaticTrainer3D(TrainerBase):
                     coords=plot_coords, u_gtr=gtr_np, u_prd=prd_np,
                     save_path=plot_save_path,
                     variable_name=var_name,
-                    point_size=2.0, view_angle=(25, -135)
+                    point_size=2.0, view_angle=(25, -135),
+                    hide_grid=True
                 )
                 print(f"Saved plot for first test sample to {plot_save_path}")
             except Exception as plot_err:

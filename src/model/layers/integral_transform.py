@@ -102,7 +102,7 @@ class IntegralTransform(nn.Module):
             # PyG's dropout_adj has ratio-based, not max-count based logic.
             # print("Warning: 'max_neighbors' sampling strategy with PyG edge_index is less efficient. Consider using 'ratio'.")
 
-            dest_nodes = edge_index[0] 
+            dest_nodes = edge_index[1] 
             counts = torch.bincount(dest_nodes, minlength=num_query_nodes)
             needs_sampling_mask = counts > self.max_neighbors
 
@@ -164,8 +164,8 @@ class IntegralTransform(nn.Module):
         Args:
             y_pos (Tensor): Source node coordinates [N_y, D] (or [TotalNodes_y, D] if batched).
             x_pos (Tensor): Query node coordinates [N_x, D] (or [TotalNodes_x, D] if batched).
-            edge_index (Tensor): Edge index [2, NumEdges] where edge_index[0] indexes into x_pos (query)
-                                 and edge_index[1] indexes into y_pos (source).
+            edge_index (Tensor): Edge index [2, NumEdges] where edge_index[1] indexes into x_pos (query)
+                                 and edge_index[0] indexes into y_pos (source).
             f_y (Tensor, optional): Source node features [N_y, C_in] (or [TotalNodes_y, C_in] if batched).
             weights (Tensor, optional): Edge weights [NumEdges,]. Not typically volume weights here.
             batch_y (Tensor, optional): Batch assignment for y_pos nodes [TotalNodes_y].
@@ -193,8 +193,8 @@ class IntegralTransform(nn.Module):
         # --- End Neighbor Sampling ---
 
 
-        query_idx = sampled_edge_index[0]
-        source_idx = sampled_edge_index[1]
+        query_idx = sampled_edge_index[1].long()
+        source_idx = sampled_edge_index[0].long()
 
         rep_features_pos = y_pos[source_idx]   # Source node coords [NumSampledEdges, D]
         self_features_pos = x_pos[query_idx]    # Query node coords [NumSampledEdges, D]

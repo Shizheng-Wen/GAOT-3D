@@ -16,14 +16,14 @@ class EnrichedData(Data):
         value: The attribute's tensor value.
         """
         if key.startswith('encoder_edge_index'):
-            # Encoder: edge_index[0] indexes LATENT, edge_index[1] indexes PHYSICAL
-            # Increment row 0 by num_latent_nodes, row 1 by num_physical_nodes
-            # Ensure 'num_latent_nodes' attribute exists in the Data object!
-            return torch.tensor([[self.num_latent_nodes], [self.num_nodes]])
-        elif key.startswith('decoder_edge_index'):
-            # Decoder: edge_index[0] indexes PHYSICAL, edge_index[1] indexes LATENT
+            # Encoder: edge_index[0] indexes PHYSICAL, edge_index[1] indexes LATENT
             # Increment row 0 by num_physical_nodes, row 1 by num_latent_nodes
+            # Ensure 'num_latent_nodes' attribute exists in the Data object!
             return torch.tensor([[self.num_nodes], [self.num_latent_nodes]])
+        elif key.startswith('decoder_edge_index'):
+            # Decoder: edge_index[0] indexes LATENT, edge_index[1] indexes PHYSICAL
+            # Increment row 0 by num_latent_nodes, row 1 by num_physical_nodes
+            return torch.tensor([[self.num_latent_nodes], [self.num_nodes]])
         elif key.startswith('encoder_query_counts') or key.startswith('decoder_query_counts'):
              # Counts should not be incremented during batching
              return torch.tensor([0] * value.dim(), dtype=torch.long) # Or return 0 for scalar? Check PyG docs if needed. Assuming tensor counts.
@@ -51,6 +51,7 @@ class VTKMeshDataset(Dataset):
         self.order_file = order_file
         self.dataset_config = dataset_config
         self.split = split
+        self.active_variables = getattr(dataset_config, 'active_variables', None)
         # Assuming processed files are stored in root/processed/
         super().__init__(root, transform, pre_transform, pre_filter)
         # Load indices after processing ensures processed files are available
@@ -126,6 +127,8 @@ class VTKMeshDataset(Dataset):
         filepath = os.path.join(self.processed_dir, self.split_filenames[idx])
         try:
             data = torch.load(filepath)
+            if self.active_variables is not None and hasattr(data, 'x') and data.x is not None:
+                data.x = data.x[:, self.active_variables]
             # Apply normalization here if stats are available and not done in preprocessing
             # Example:
             # if hasattr(self, 'mean') and hasattr(self, 'std'):

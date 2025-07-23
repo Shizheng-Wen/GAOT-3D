@@ -1014,11 +1014,12 @@ def plot_3d_comparison_matplotlib(
     dpi: int = 150,
     view_angle: Tuple[float, float] = (20, -120),
     hide_grid: bool = False,
-    equal_aspect: bool = True # <-- Control aspect ratio setting
+    equal_aspect: bool = True, # <-- Control aspect ratio setting
+    show_abs_diff: bool = False # 新增参数，控制是否显示absolute difference
 ):
     """
-    Generates a 3-panel 3D scatter plot comparison using Matplotlib...
-    Adds option for equal aspect ratio.
+    Generates a 3/4-panel 3D scatter plot comparison using Matplotlib...
+    Adds option for equal aspect ratio and input shape display.
 
     Parameters:
     coords : np.ndarray
@@ -1041,10 +1042,12 @@ def plot_3d_comparison_matplotlib(
     view_angle : Tuple[float, float], optional
         The elevation and azimuth angles for the 3D view. Defaults to (30, -60).
     hide_grid: bool, optional
-        Whether to show the background grid.
+        Whether to show the background grid and axis.
     equal_aspect: bool, optional
         If True, attempts to set axis limits to achieve visually equal scaling.
         Defaults to True.
+    show_abs_diff: bool, optional
+        If True, show absolute difference subplot. Defaults to True.
     """
     try:
         u_diff = np.abs(u_gtr - u_prd)
@@ -1053,93 +1056,117 @@ def plot_3d_comparison_matplotlib(
         clim_common = [common_min, common_max]
         clim_diff = [np.min(u_diff), np.max(u_diff)]
 
-        fig = plt.figure(figsize=(18, 6))
-
-        xlims, ylims, zlims = None, None, None
-        if equal_aspect:
-            x_min, x_max = coords[:, 0].min(), coords[:, 0].max()
-            y_min, y_max = coords[:, 1].min(), coords[:, 1].max()
-            z_min, z_max = coords[:, 2].min(), coords[:, 2].max()
-            x_range = x_max - x_min
-            y_range = y_max - y_min
-            z_range = z_max - z_min
-
-            # Find the midpoint of the data
-            x_mid = (x_max + x_min) / 2.0
-            y_mid = (y_max + y_min) / 2.0
-            z_mid = (z_max + z_min) / 2.0
-
-            # Find the maximum range along any axis
-            max_range = max(x_range, y_range, z_range)
-
-            # Calculate the limits to make each axis span max_range, centered at midpoint
-            plot_radius = max_range / 2.0 * 1.1 # Add 10% padding
-
-            xlims = (x_mid - plot_radius, x_mid + plot_radius)
-            ylims = (y_mid - plot_radius, y_mid + plot_radius)
-            zlims = (z_mid - plot_radius, z_mid + plot_radius)
-        # ----------------------------------------------------
-
+        # 
+        ncols = 4 if show_abs_diff else 3
+        fig = plt.figure(figsize=(6*ncols, 6))
         axes = []
+        ax_idx = 1
+
+        # Subplot 0: Input Shape
+        ax0 = fig.add_subplot(1, ncols, ax_idx, projection='3d')
+        sc0 = ax0.scatter(coords[:, 0], coords[:, 1], coords[:, 2],
+                         c='gray', s=point_size, depthshade=False)
+        ax0.set_title("Input Shape", fontsize=14)  
+        axes.append(ax0)
+        ax_idx += 1
+
         # Subplot 1: Ground Truth
-        ax1 = fig.add_subplot(131, projection='3d')
+        ax1 = fig.add_subplot(1, ncols, ax_idx, projection='3d')
         sc1 = ax1.scatter(coords[:, 0], coords[:, 1], coords[:, 2],
                           c=u_gtr, cmap=cmap, s=point_size,
                           vmin=clim_common[0], vmax=clim_common[1], depthshade=False)
-        ax1.set_title(f"Ground Truth ({variable_name})")
-        fig.colorbar(sc1, ax=ax1, shrink=0.6, aspect=10, label=f"GT {variable_name}")
+        ax1.set_title(f"Ground-truth", fontsize=14)
         axes.append(ax1)
+        ax_idx += 1
 
         # Subplot 2: Prediction
-        ax2 = fig.add_subplot(132, projection='3d')
+        ax2 = fig.add_subplot(1, ncols, ax_idx, projection='3d')
         sc2 = ax2.scatter(coords[:, 0], coords[:, 1], coords[:, 2],
                           c=u_prd, cmap=cmap, s=point_size,
                           vmin=clim_common[0], vmax=clim_common[1], depthshade=False)
-        ax2.set_title(f"Prediction ({variable_name})")
-        fig.colorbar(sc2, ax=ax2, shrink=0.6, aspect=10, label=f"Pred {variable_name}")
+        ax2.set_title(f"Model Estimate", fontsize=14)
         axes.append(ax2)
+        ax_idx += 1
 
-        # Subplot 3: Difference
-        ax3 = fig.add_subplot(133, projection='3d')
-        sc3 = ax3.scatter(coords[:, 0], coords[:, 1], coords[:, 2],
-                          c=u_diff, cmap="Reds", s=point_size,
-                          vmin=clim_diff[0], vmax=clim_diff[1], depthshade=False)
-        ax3.set_title("Absolute Difference")
-        fig.colorbar(sc3, ax=ax3, shrink=0.6, aspect=10, label="Abs. Diff.")
-        axes.append(ax3)
+        # Subplot 3: Difference (optional)
+        if show_abs_diff:
+            ax3 = fig.add_subplot(1, ncols, ax_idx, projection='3d')
+            sc3 = ax3.scatter(coords[:, 0], coords[:, 1], coords[:, 2],
+                              c=u_diff, cmap="Reds", s=point_size,
+                              vmin=clim_diff[0], vmax=clim_diff[1], depthshade=False)
+            ax3.set_title("Absolute Difference")
+            axes.append(ax3)
 
-        # Apply common settings to all axes
+        # shared colorbar (GT and PRD)
+        cb = fig.colorbar(sc1, ax=[ax1, ax2], orientation='horizontal', fraction=0.05, pad=0.15)
+        cb.set_label(f"{variable_name}") 
+        cb.ax.tick_params(labelsize=10, length=0) 
+        cb.ax.xaxis.set_label_position('top')
+        cb.ax.xaxis.set_ticks_position('top')
+        cb.outline.set_visible(False)  
+
+        # Difference colorbar
+        if show_abs_diff:
+            cb3 = fig.colorbar(sc3, ax=ax3, orientation='horizontal', fraction=0.05, pad=0.15)
+            cb3.set_label("Abs. Diff.")
+            cb3.ax.tick_params(labelsize=10, length=0)
+            cb3.ax.xaxis.set_label_position('top')
+            cb3.ax.xaxis.set_ticks_position('top')
+            cb3.outline.set_visible(False)
+
+        # 统一设置
         for ax in axes:
             ax.set_xlabel("X")
             ax.set_ylabel("Y")
             ax.set_zlabel("Z")
             ax.view_init(elev=view_angle[0], azim=view_angle[1])
-
-            # --- Apply aspect ratio scaling ---
-            if equal_aspect and xlims and ylims and zlims:
+            if equal_aspect:
+                x_min, x_max = coords[:, 0].min(), coords[:, 0].max()
+                y_min, y_max = coords[:, 1].min(), coords[:, 1].max()
+                z_min, z_max = coords[:, 2].min(), coords[:, 2].max()
+                x_range = x_max - x_min
+                y_range = y_max - y_min
+                z_range = z_max - z_min
+                x_mid = (x_max + x_min) / 2.0
+                y_mid = (y_max + y_min) / 2.0
+                z_mid = (z_max + z_min) / 2.0
+                max_range = max(x_range, y_range, z_range)
+                plot_radius = max_range / 2.0 * 1.1
+                xlims = (x_mid - plot_radius, x_mid + plot_radius)
+                ylims = (y_mid - plot_radius, y_mid + plot_radius)
+                zlims = (z_mid - plot_radius, z_mid + plot_radius)
                 ax.set_xlim(xlims)
                 ax.set_ylim(ylims)
                 ax.set_zlim(zlims)
-                # Use set_box_aspect for newer matplotlib versions if possible
-                # This attempts to make the visual box dimensions proportional to the data ranges set above
                 try:
-                    # We calculated limits to be cubic, so aspect should be (1,1,1) relative to limits
                     ax.set_box_aspect((1, (ylims[1]-ylims[0])/(xlims[1]-xlims[0]), (zlims[1]-zlims[0])/(xlims[1]-xlims[0])))
-                    # A simpler way given we forced cubic limits:
-                    # ax.set_box_aspect((1,1,1))
                 except AttributeError:
-                     # Fallback for older versions (less reliable for 3D)
-                     ax.set_aspect('auto') # Default is 'auto', 'equal' often doesn't work well here
-
-            # --- Apply grid hiding ---
+                    ax.set_aspect('auto')
             if hide_grid:
                 ax.grid(False)
-                ax.xaxis.pane.fill = False
-                ax.yaxis.pane.fill = False
-                ax.zaxis.pane.fill = False
-                ax.xaxis.pane.set_edgecolor('w')
-                ax.yaxis.pane.set_edgecolor('w')
-                ax.zaxis.pane.set_edgecolor('w')
+                # 隐藏坐标轴刻度、标签、轴线
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_zticks([])
+                ax.set_xlabel("")
+                ax.set_ylabel("")
+                ax.set_zlabel("")
+                # 兼容不同matplotlib版本
+                for axis in [ax.xaxis, ax.yaxis, ax.zaxis]:
+                    try:
+                        axis.line.set_color((0,0,0,0))
+                    except Exception:
+                        pass
+                # 隐藏3D坐标轴面
+                try:
+                    ax.xaxis.pane.fill = False
+                    ax.yaxis.pane.fill = False
+                    ax.zaxis.pane.fill = False
+                    ax.xaxis.pane.set_edgecolor('w')
+                    ax.yaxis.pane.set_edgecolor('w')
+                    ax.zaxis.pane.set_edgecolor('w')
+                except Exception:
+                    pass
 
         plt.tight_layout()
         output_dir = os.path.dirname(save_path)
