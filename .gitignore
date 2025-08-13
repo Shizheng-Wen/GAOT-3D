@@ -35,4 +35,10 @@ logs/*
 .database/
 .loss/
 .results/
+scripts/
+dataset/
+analysis/
+CLAUDE.md
+TODO.md
+
 
