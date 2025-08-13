@@ -1,17 +1,52 @@
-# :goat: GAOT-3D: Geometry-Aware Operator Transformer (3D Implementation)
+# :goat: Optimized Geometry-Aware Operator Transformer for Ultra-large 3D Implementation
 
-This repository provides the 3D implementation of the Geometry-Aware Operator Transformer (GAOT). 
+This repository provides the optimized implementation of the Geometry-Aware Operator Transformer (GAOT) for ultra-large-scale 3D datasets. Large-scale 3D datasets typically have very high mesh resolutions, and each sample often comes with different point cloud densities. Therefore, compared to our other [**GAOT**](https://github.com/camlab-ethz/GAOT) repository, we have optimized the graph-building strategy and model workflow, and modified the data processing interface so that the model can directly handle VTK files.
+
+We evaluated our model on three industry-scale datasets:
+- DrivaerNet++: mesh resolution of 500K, 8,000 samples.
+- NASA CRM: mesh resolution of 500K, 149 samples.
+- DrivaerML: mesh resolution of 8 million - 10 million, 484 samples.
+
+> Note: For the DrivaerNet++ dataset, we used 5,817 samples for training, 1,148 for validation, and 1,154 for testing, achieving a top-ranking score on the DrivaerNet++ Leaderboard. For the DrivaerML dataset, we used 400 samples for training, 34 for validation, and 50 for testing — to the best of our knowledge, this is the first time a full-resolution model has been trained without any downsampling.
+
 
 Paper: **"Geometry Aware Operator Transformer as an efficient and accurate neural surrogate for PDEs on arbitrary domains".**
 
-For the 2D version of GAOT, please refer to the main repository: [**GAOT**](https://github.com/camlab-ethz/GAOT)
+## Updates
+***13/09/2025***
 
-**Branches:**
-
-* `main`: Implements GAOT-3D with full-precision learning.
-* `neurfield`: Explores an implementation using a neural field approach.
+1. Providing a more flexible graph-building strategy to effectively control the explosion in the number of edges in 3D scenarios.
+2. Implemented a more flexible geometric embedding module, allowing it to be applied only in the encoder or only in the decoder if desired.
+3. Adjusted the position where edge masking is applied.
+4. Integrated the neural field feature into the main branch.
 
 ## Results
+<p align="center">
+  <img src="assets/nasacrm_pressure.png" alt="Surface Pressure" width="600"/>
+  <br/>
+  <em>Figure 1: Visualization of NASA CRM for the surface pressure.</em>
+</p>
+
+<p align="center">
+  <img src="assets/drivaerml_pressure.png" alt="Surface Pressure" width="600"/>
+  <br/>
+  <em>Figure 2: Visualization of DrivAerML for the surface pressure.</em>
+</p>
+
+
+<p align="center">
+  <img src="assets/drivaernet_pressure.png" alt="Surface Pressure" width="600"/>
+  <br/>
+  <em>Figure 3: Visualization of DrivAerNet++ for the surface pressure.</em>
+</p>
+
+<p align="center">
+  <img src="assets/drivaernet_wss_x.png" alt="Wall Shear Stress" width="600"/>
+  <br/>
+  <em>Figure 4: Visualization of DrivAerNet++ for the wall shear stress (x-component).</em>
+</p>
+
+
 
 **Error Metrics on DrivAerNet++ Dataset**
 
@@ -24,13 +59,40 @@ For the 2D version of GAOT, please refer to the main repository: [**GAOT**](http
 | RegDGCNN          | 8.2900           | 1.6100                | 13.8200     | 3.6400           |
 | GAOT (NeurField)  | 12.0786          | 1.7826                | 22.9160     | 2.5099           |
 
-<p align="center">
-  <img src="assets/pressure_comparison.png" alt="Surface Pressure" width="600"/>
-  <br/>
-  <em>Figure 1: Visualization of test sample N_S_WWS_WM_172 for the surface pressure.</em>
-</p>
 
 
+## Updated Graph Building Strategy
+```mermaid
+graph TD
+    A[get_neighbor_strategy] --> B{is_decoder?}
+    
+    B -->|False| C[_get_encoder_strategy]
+    B -->|True| D[_get_decoder_strategy]
+    
+    C --> C1{strategy type}
+    C1 -->|knn| C2["Each phys point<br/>→ k nearest latent tokens<br/>Direction: phys → latent"]
+    C1 -->|radius| C3["Latent as center<br/>→ phys within radius<br/>Direction: phys → latent"]
+    C1 -->|bidirectional| C4["Combine knn + radius<br/>Direction: phys → latent"]
+    
+    D --> D1{strategy type}
+    D1 -->|knn| D2["Each phys point<br/>→ k nearest latent tokens<br/>Direction: latent → phys"]
+    D1 -->|radius| D3["Phys as center<br/>→ latent within radius<br/>Direction: latent → phys"]
+    D1 -->|bidirectional| D4["Combine knn + radius<br/>Direction: latent → phys"]
+    D1 -->|reverse| D5["Use encoder graph<br/>and reverse it<br/>Direction: latent → phys"]
+    
+    C2 --> E[return edge_index]
+    C3 --> E
+    C4 --> E
+    D2 --> E
+    D3 --> E
+    D4 --> E
+    D5 --> E
+    
+    style A fill:#e1f5fe
+    style C fill:#f3e5f5
+    style D fill:#e8f5e8
+    style E fill:#fff3e0
+```
 ## Installation
 
 1.  **Create and activate a virtual environment (recommended):**
@@ -39,6 +101,12 @@ For the 2D version of GAOT, please refer to the main repository: [**GAOT**](http
     python -m venv venv-gaot3d
     source venv-gaot3d/bin/activate
     ```
+    For PyG-related packages (e.g., torch-scatter), run:
+    ```bash
+    pip install torch-scatter -f https://data.pyg.org/whl/torch-2.7.0+${CUDA}.html
+    pip install torch-cluster -f https://data.pyg.org/whl/torch-2.7.0+${CUDA}.html
+    ```
+    Replace ${CUDA} with your CUDA version (e.g., cu128, cu121 or cpu).
     
 2.  **Install dependencies:**
     ```bash
@@ -98,37 +166,6 @@ All experiment parameters are managed through configuration files (JSON or TOML 
 For a detailed explanation of all configuration options and their default values, refer to `src/trainer/utils/default_set.py`.
 
 Example configuration files are provided in `config/examples/drivaernet/`.
-```mermaid
-graph TD
-    A[get_neighbor_strategy] --> B{is_decoder?}
-    
-    B -->|False| C[_get_encoder_strategy]
-    B -->|True| D[_get_decoder_strategy]
-    
-    C --> C1{strategy type}
-    C1 -->|knn| C2["Each phys point<br/>→ k nearest latent tokens<br/>Direction: phys → latent"]
-    C1 -->|radius| C3["Latent as center<br/>→ phys within radius<br/>Direction: phys → latent"]
-    C1 -->|bidirectional| C4["Combine knn + radius<br/>Direction: phys → latent"]
-    
-    D --> D1{strategy type}
-    D1 -->|knn| D2["Each phys point<br/>→ k nearest latent tokens<br/>Direction: latent → phys"]
-    D1 -->|radius| D3["Phys as center<br/>→ latent within radius<br/>Direction: latent → phys"]
-    D1 -->|bidirectional| D4["Combine knn + radius<br/>Direction: latent → phys"]
-    D1 -->|reverse| D5["Use encoder graph<br/>and reverse it<br/>Direction: latent → phys"]
-    
-    C2 --> E[return edge_index]
-    C3 --> E
-    C4 --> E
-    D2 --> E
-    D3 --> E
-    D4 --> E
-    D5 --> E
-    
-    style A fill:#e1f5fe
-    style C fill:#f3e5f5
-    style D fill:#e8f5e8
-    style E fill:#fff3e0
-```
 ### Training
 
 To train a model, execute `main.py` with the path to your configuration file:

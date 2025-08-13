@@ -23,7 +23,7 @@ class Metadata:
   global_std: Sequence[float]
 
 DATASET_METADATA = {
-  'gaot-unstructured/drivaernet_pressure': Metadata(
+  'incompressible_fluids/drivaernet_pressure': Metadata(
     periodic=False,
     group_u='u',
     group_c=None,
@@ -40,7 +40,7 @@ DATASET_METADATA = {
     global_mean=[-94.5],
     global_std=[117.25],
   ),
-  'gaot-unstructured/drivaernet_shearstress': Metadata(
+  'incompressible_fluids/drivaernet_shearstress': Metadata(
     periodic=False,
     group_u='u',
     group_c=None,
@@ -57,7 +57,7 @@ DATASET_METADATA = {
     global_mean=[-0.6717,  0.0364, -0.0846],
     global_std=[0.8199, 0.4510, 0.7811],
   ),
-  'gaot-unstructured/nasa_crm_pressure': Metadata(
+  'incompressible_fluids/nasa_crm_pressure': Metadata(
     periodic=False,
     group_u='u',
     group_c='c',
@@ -74,7 +74,7 @@ DATASET_METADATA = {
     global_mean=[-3.3177e-02],
     global_std=[0.3108],
   ),
-  'gaot-unstructured/nasa_crm_sfc': Metadata(
+  'incompressible_fluids/nasa_crm_sfc': Metadata(
     periodic=False,
     group_u='u',
     group_c='c',
@@ -91,7 +91,7 @@ DATASET_METADATA = {
     global_mean=[1.4710e-03,  6.4260e-06, -2.2570e-06],
     global_std=[0.0010, 0.0005, 0.0007],
   ),
-  'gaot-unstructured/drivaerml_pressure': Metadata(
+  'incompressible_fluids/drivaerml_pressure': Metadata(
     periodic=False,
     group_u='u',
     group_c=None,

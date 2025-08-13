@@ -20,11 +20,6 @@ class RescalePosition(BaseTransform):
     
     def __call__(self, data: Data) -> Data:
         if hasattr(data, 'pos') and data.pos is not None:
-            # Apply rescale to data.pos
-            # The rescale function you provided finds min/max per call.
-            # Ensure this is the desired behavior (scale each graph independently)
-            # or if global min/max should be used (requires pre-calculation).
-            # Assuming per-graph scaling for now based on the function provided.
             data.pos = rescale(data.pos, lims=self.lims)
         else:
             print("Warning: RescalePosition transform called but data has no 'pos' attribute.")
@@ -32,6 +27,7 @@ class RescalePosition(BaseTransform):
     
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(lims={self.lims})'
+
 
 class RescalePositionNew(BaseTransform):
     """Rescales node positions 'pos' to a specified range (default: [-1, 1])."""
@@ -41,11 +37,6 @@ class RescalePositionNew(BaseTransform):
     
     def __call__(self, data: Data) -> Data:
         if hasattr(data, 'pos') and data.pos is not None:
-            # Apply rescale to data.pos
-            # The rescale function you provided finds min/max per call.
-            # Ensure this is the desired behavior (scale each graph independently)
-            # or if global min/max should be used (requires pre-calculation).
-            # Assuming per-graph scaling for now based on the function provided.
             data.pos = rescale_new(data.pos, lims=self.lims, phys_domain=self.phy_domain)
         else:
             print("Warning: RescalePosition transform called but data has no 'pos' attribute.")
@@ -61,12 +52,10 @@ class NormalizeFeatures(BaseTransform):
         self.mean = mean.detach()
         self.std = std.detach()
         
-        # Optional normalization for c field
         self.c_mean = c_mean.detach() if c_mean is not None else None
         self.c_std = c_std.detach() if c_std is not None else None
 
     def __call__(self, data: Data) -> Data:
-        # Normalize x field
         if hasattr(data, 'x') and data.x is not None:
             mean_dev = self.mean.to(data.x.device)
             std_dev = self.std.to(data.x.device)
@@ -74,7 +63,6 @@ class NormalizeFeatures(BaseTransform):
         else:
             print("Warning: NormalizeFeatures transform called but data has no 'x' attribute.")
         
-        # Normalize c field if both c field and c statistics exist
         if hasattr(data, 'c') and data.c is not None and self.c_mean is not None and self.c_std is not None:
             c_mean_dev = self.c_mean.to(data.c.device)
             c_std_dev = self.c_std.to(data.c.device)

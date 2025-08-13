@@ -40,8 +40,6 @@ class StaticTrainer3D(TrainerBase):
 
     def __init__(self, args):
         super().__init__(args)
-        
-        # Validate neural_field training strategy configuration
         if self.dataset_config.training_strategy == 'neural_field':
             if self.dataset_config.update_pt_files_with_edges:
                 raise ValueError("neural_field training strategy requires update_pt_files_with_edges=False")
@@ -61,7 +59,6 @@ class StaticTrainer3D(TrainerBase):
             self.u_std = stats['std'].to(self.dtype)
             print(f"Loaded x - Mean: {self.u_mean}, Std: {self.u_std}")
             
-            # Load c statistics if they exist
             if 'c_mean' in stats and 'c_std' in stats:
                 self.c_mean = stats['c_mean'].to(self.dtype)
                 self.c_std = stats['c_std'].to(self.dtype)
@@ -71,28 +68,22 @@ class StaticTrainer3D(TrainerBase):
                 self.c_std = None
         else:
             print("Calculating normalization statistics from training set...")
-            # Need to instantiate a temporary dataset for the training split *without* normalization
-            # to iterate and compute stats.
             temp_train_dataset = VTKMeshDataset(
                 root=dataset_config.base_path,
                 order_file=order_file_path,
                 dataset_config=dataset_config,
                 split='train',
-                transform=RescalePosition() # Apply rescaling even when calculating stats
+                transform=RescalePosition() 
             )
-            # Use a simple loader to iterate
-            temp_loader = PyGDataLoader(temp_train_dataset, batch_size=dataset_config.batch_size, shuffle=False, num_workers=4) # Use 0 workers for simplicity here
+
+            temp_loader = PyGDataLoader(temp_train_dataset, batch_size=dataset_config.batch_size, shuffle=False, num_workers=4) 
 
             all_x = []
             all_c = []
             has_c_field = False
             
             for batch in tqdm(temp_loader, desc="Calculating Stats"):
-                # Collect all 'x' features from the training set
-                # Be mindful of memory for large datasets!
-                all_x.append(batch.x.cpu()) # Move to CPU to avoid GPU memory buildup
-                
-                # Also collect 'c' features if they exist
+                all_x.append(batch.x.cpu()) 
                 if hasattr(batch, 'c') and batch.c is not None:
                     all_c.append(batch.c.cpu())
                     has_c_field = True
@@ -100,12 +91,10 @@ class StaticTrainer3D(TrainerBase):
             if not all_x:
                  raise ValueError("No data found in training set to calculate statistics.")
 
-            # Calculate x statistics
             full_x_tensor = torch.cat(all_x, dim=0)
             self.u_mean = torch.mean(full_x_tensor, dim=0, dtype=self.dtype)
             self.u_std = torch.std(full_x_tensor, dim=0).to(self.dtype)
 
-            # Calculate c statistics if c field exists
             if has_c_field and all_c:
                 full_c_tensor = torch.cat(all_c, dim=0)
                 self.c_mean = torch.mean(full_c_tensor, dim=0, dtype=self.dtype)
@@ -116,7 +105,6 @@ class StaticTrainer3D(TrainerBase):
                 self.c_std = None
 
             print(f"Calculated x - Mean: {self.u_mean}, Std: {self.u_std}")
-            # Save calculated stats
             print(f"Saving normalization stats to {stats_file}")
             os.makedirs(os.path.dirname(stats_file), exist_ok=True)
             
@@ -125,7 +113,6 @@ class StaticTrainer3D(TrainerBase):
                 stats_to_save['c_mean'] = self.c_mean
                 stats_to_save['c_std'] = self.c_std
             torch.save(stats_to_save, stats_file)
-        # Ensure stats are available and have correct type
         if self.u_mean is None or self.u_std is None:
              raise RuntimeError("Normalization mean/std could not be calculated or loaded.")
         self.u_mean = self.u_mean.to(self.dtype)
@@ -148,10 +135,8 @@ class StaticTrainer3D(TrainerBase):
         total_samples = len(all_filenames_base)
         train_size = dataset_config.train_size
         val_size = dataset_config.val_size
-        # Test size calculation depends on how split was done previously
         test_size = dataset_config.test_size
         indices = np.arange(total_samples) 
-        # Note: rand_dataset shuffling is NOT applied here, we process based on original order file names
         train_indices = indices[:train_size]
         val_indices = indices[train_size : train_size + val_size]
         test_indices = indices[-test_size:] 
@@ -279,10 +264,11 @@ class StaticTrainer3D(TrainerBase):
             
             self.model_config.args.magno.precompute_edges = True
             print(f"Rank {self.setup_config.rank}: Set model config to use precomputed edges.")
-
         # --- end Pre-computation /Update Step --- 
+
         # --- Calculate or Load Normalization Stats ---
         self._calculate_or_load_stats(dataset_config, order_file_path, data_root)
+        
         # --- Define Transforms ---
         if dataset_config.use_rescale_new:
             rescale_transform = RescalePositionNew(lims=(-1., 1.), phy_domain = phy_domain)
@@ -301,7 +287,6 @@ class StaticTrainer3D(TrainerBase):
         c_mean_for_norm = None
         c_std_for_norm = None
         if self.c_mean is not None and self.c_std is not None:
-            # Note: c field doesn't use active_variables selection since it's input features
             c_mean_for_norm = self.c_mean
             c_std_for_norm = self.c_std
         
@@ -351,7 +336,7 @@ class StaticTrainer3D(TrainerBase):
                     num_replicas=self.setup_config.world_size,
                     rank=self.setup_config.rank,
                     shuffle=dataset_config.shuffle, # Sampler handles shuffling
-                    drop_last=True # Often good practice for DDP
+                    drop_last=True                  # Often good practice for DDP
                 )
                 print(f"Rank {self.setup_config.rank}: Created DistributedSampler for training.")
 
@@ -361,7 +346,7 @@ class StaticTrainer3D(TrainerBase):
                 shuffle=False if train_sampler is not None else dataset_config.shuffle,
                 num_workers=dataset_config.num_workers,
                 sampler=train_sampler,
-                pin_memory=False, # Good practice if using GPU
+                pin_memory=False, 
                 drop_last=train_sampler is not None 
             )
 
@@ -429,7 +414,6 @@ class StaticTrainer3D(TrainerBase):
         use_same_sampling = (num_input_nodes == num_query_nodes)
         
         for i in range(batch.num_graphs):
-            # Get full data for graph i
             start_idx = batch.ptr[i]
             end_idx = batch.ptr[i+1]
             num_full_nodes_i = end_idx - start_idx
@@ -437,19 +421,16 @@ class StaticTrainer3D(TrainerBase):
             full_pos_i = batch.pos[start_idx:end_idx]
             full_x_i = batch.x[start_idx:end_idx]
             
-            # Handle optional c field
             full_c_i = None
             if hasattr(batch, 'c') and batch.c is not None:
                 full_c_i = batch.c[start_idx:end_idx]
             
-            # Sample for encoder input
             n_input_sample = min(num_input_nodes, num_full_nodes_i)
             if n_input_sample <= 0:
                 continue
                 
             input_perm = torch.randperm(num_full_nodes_i)[:n_input_sample]
             
-            # Sample for decoder query
             if use_same_sampling:
                 query_perm = input_perm
                 n_query_sample = n_input_sample
@@ -457,38 +438,31 @@ class StaticTrainer3D(TrainerBase):
                 n_query_sample = min(num_query_nodes, num_full_nodes_i)
                 query_perm = torch.randperm(num_full_nodes_i)[:n_query_sample]
             
-            # Create sampled data for encoder
             sampled_pos_i = full_pos_i[input_perm]
             sampled_x_i = full_x_i[input_perm]
             
-            # Create Data object for this graph
             data_i = Data(pos=sampled_pos_i, x=sampled_x_i)
             if full_c_i is not None:
                 data_i.c = full_c_i[input_perm]
             
-            # Copy other essential attributes (except pre-computed graph info)
             essential_attrs = ['filename', 'num_latent_nodes']
             for attr in essential_attrs:
                 if hasattr(batch, attr) and getattr(batch, attr) is not None:
                     if isinstance(getattr(batch, attr), list):
                         setattr(data_i, attr, getattr(batch, attr)[i])
                     else:
-                        # For tensor attributes, we need to slice appropriately
                         attr_value = getattr(batch, attr)
                         if attr_value.dim() > 0 and len(attr_value) == batch.num_graphs:
                             setattr(data_i, attr, attr_value[i])
             
             sampled_data_list.append(data_i)
             
-            # Collect query data
             query_pos_list.append(full_pos_i[query_perm])
             query_batch_idx_list.append(torch.full((n_query_sample,), i, dtype=torch.long))
             target_for_loss_list.append(full_x_i[query_perm])
         
-        # Create new batch from sampled data
         sampled_batch = Batch.from_data_list(sampled_data_list)
         
-        # Concatenate query data
         query_pos = torch.cat(query_pos_list, dim=0)
         query_batch_idx = torch.cat(query_batch_idx_list, dim=0)
         target_for_loss = torch.cat(target_for_loss_list, dim=0)
@@ -504,12 +478,10 @@ class StaticTrainer3D(TrainerBase):
             num_input_nodes = self.dataset_config.neural_field_input_nodes
             num_query_nodes = self.dataset_config.neural_field_query_nodes_train
             
-            # Sample nodes and create new batch (on CPU)
             sampled_batch, query_pos, query_batch_idx, target_for_loss = self._sample_nodes_neural_field(
                 batch, num_input_nodes, num_query_nodes
             )
 
-            # Now move to device
             sampled_batch = sampled_batch.to(self.device)
             query_pos = query_pos.to(self.device)
             query_batch_idx = query_batch_idx.to(self.device)
@@ -524,7 +496,6 @@ class StaticTrainer3D(TrainerBase):
             
             target = target_for_loss
         else:
-            # Default full_grid strategy: move original batch to device
             batch = batch.to(self.device)
             pred = self.model(
                 batch=batch,
@@ -556,10 +527,9 @@ class StaticTrainer3D(TrainerBase):
         self.model.eval()
         metric_suite = self.dataset_config.metric_suite
         
-        # Store data needed for metric calculation and plotting
         all_batch_targets_denorm = []
         all_batch_preds_denorm = []
-        plot_coords, plot_gtr, plot_prd = None, None, None # For plotting first sample
+        plot_coords, plot_gtr, plot_prd = None, None, None 
         
         print(f"Starting testing with metric suite: '{metric_suite}'")
 
@@ -571,19 +541,14 @@ class StaticTrainer3D(TrainerBase):
                 pred_norm = self.model(batch, latent_tokens_dev)
                 target_norm = batch.x
 
-                # De-normalize predictions and targets
                 u_std_dev = self.u_std[self.dataset_config.active_variables].to(self.device)
                 u_mean_dev = self.u_mean[self.dataset_config.active_variables].to(self.device)
                 pred_de_norm = pred_norm * u_std_dev + u_mean_dev
                 target_de_norm = target_norm * u_std_dev + u_mean_dev
 
-                # --- Store results for aggregation ---
-                # Store de-normalized results on CPU to save GPU memory
                 all_batch_targets_denorm.append(target_de_norm.cpu())
                 all_batch_preds_denorm.append(pred_de_norm.cpu())
-                # --- End Storing ---
 
-                # --- Plotting Logic (extract data for first sample of first batch) ---
                 if i == 0 and self.setup_config.rank == 0:
                     plotting_idx = 0
                     first_graph_node_mask = (batch.batch == plotting_idx)
@@ -593,9 +558,7 @@ class StaticTrainer3D(TrainerBase):
                     print(f"Extracted plotting data of {batch.filename[plotting_idx]}:"
                             f"coords shape {plot_coords.shape}, gtr shape {plot_gtr.shape}, prd shape {plot_prd.shape}"
                         )
-                # --- End Plotting Logic ---
 
-        # --- Aggregate Metrics and Plot (Rank 0 only) ---
         if self.setup_config.rank == 0:
             full_preds = torch.cat(all_batch_preds_denorm, dim=0)
             full_targets = torch.cat(all_batch_targets_denorm, dim=0)
@@ -623,7 +586,6 @@ class StaticTrainer3D(TrainerBase):
                 print(f"Rel L1 Error (%):   {agg_metrics['Rel_L1'] * 100:.4f}")
 
             elif metric_suite == "general":
-                # Calculate general metrics on the full concatenated tensors
                 diff = full_preds - full_targets
                 mse = torch.mean(diff ** 2).item()
                 mae = torch.mean(torch.abs(diff)).item()

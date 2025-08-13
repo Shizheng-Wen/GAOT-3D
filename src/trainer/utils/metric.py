@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from ...data.dataset import Metadata
+from ...data.metadata import Metadata
 from typing import List, Dict, Union 
 
 EPSILON = 1e-10
@@ -19,7 +19,6 @@ def compute_batch_errors(gtr: torch.Tensor, prd: torch.Tensor, metadata: Metadat
     Returns:
         torch.Tensor: Relative errors per sample per variable chunk, shape [batch_size, num_chunks]
     """
-    # normalize the data
     active_vars = metadata.active_variables
 
     mean = torch.tensor(metadata.global_mean, device=gtr.device, dtype=gtr.dtype)[active_vars].reshape(1, 1, 1, -1)
@@ -37,21 +36,17 @@ def compute_batch_errors(gtr: torch.Tensor, prd: torch.Tensor, metadata: Metadat
     gtr_norm = (gtr - mean) / std
     prd_norm = (prd - mean) / std
 
-    # compute absolute errors and sum over the time and space dimensions
     abs_error = torch.abs(gtr_norm - prd_norm)  # Shape: [batch_size, time, space, var]
     error_sum = torch.sum(abs_error, dim=(1, 2))  # Shape: [batch_size, var]
 
-    # sum errors per variable chunk
     chunks_expanded = chunks.unsqueeze(0).expand(error_sum.size(0), -1)  # Shape: [batch_size, var]
     error_per_chunk = torch.zeros(error_sum.size(0), num_chunks, device=gtr.device, dtype=error_sum.dtype)
     error_per_chunk.scatter_add_(1, chunks_expanded, error_sum)
 
-    # compute sum of absolute values of the ground truth per chunk
     gtr_abs_sum = torch.sum(torch.abs(gtr_norm), dim=(1, 2))  # Shape: [batch_size, var]
     gtr_sum_per_chunk = torch.zeros(gtr_abs_sum.size(0), num_chunks, device=gtr.device, dtype=gtr_abs_sum.dtype)
     gtr_sum_per_chunk.scatter_add_(1, chunks_expanded, gtr_abs_sum)
 
-    # compute relative errors per chunk
     relative_error_per_chunk = error_per_chunk / (gtr_sum_per_chunk + EPSILON) # Shape: [batch_size, num_chunks]
 
     return relative_error_per_chunk # Shape: [batch_size, num_chunks]
@@ -66,10 +61,8 @@ def compute_final_metric(all_relative_errors: torch.Tensor) -> float:
     Returns:
         Metrics: An object containing the final relative L1 median error
     """
-    # Compute the median over the sample axis for each chunk
     median_error_per_chunk = torch.median(all_relative_errors, dim=0)[0]  # Shape: [num_chunks]
 
-    # Take the mean of the median errors across all chunks
     final_metric = torch.mean(median_error_per_chunk)
     
     return final_metric.item()
@@ -95,17 +88,14 @@ def compute_general_metrics_batch(gtr: torch.Tensor, prd: torch.Tensor) -> Dict[
     prd_flat = prd.view(batch_size, -1)
     diff_flat = prd_flat - gtr_flat
 
-    # MSE, MAE, Max_AE
     mse_batch = torch.mean(diff_flat ** 2).item()
     mae_batch = torch.mean(torch.abs(diff_flat)).item()
     max_ae_batch = torch.max(torch.abs(diff_flat)).item()
 
-    # Relative L2 Error per sample
     norm_diff_l2 = torch.linalg.norm(diff_flat, ord=2, dim=1)
     norm_gtr_l2 = torch.linalg.norm(gtr_flat, ord=2, dim=1)
     rel_l2_batch = torch.mean(norm_diff_l2 / (norm_gtr_l2 + EPSILON)).item() * 100.0
 
-    # Relative L1 Error per sample
     norm_diff_l1 = torch.linalg.norm(diff_flat, ord=1, dim=1)
     norm_gtr_l1 = torch.linalg.norm(gtr_flat, ord=1, dim=1)
     rel_l1_batch = torch.mean(norm_diff_l1 / (norm_gtr_l1 + EPSILON)).item() * 100.0 # As percentage
@@ -144,7 +134,6 @@ def aggregate_general_metrics(batch_metrics_list: List[Dict[str, float]]) -> Dic
     agg_rel_l1 = sum(m['rel_l1'] for m in batch_metrics_list) / num_batches
     agg_max_ae = max(m['max_ae'] for m in batch_metrics_list)
 
-    # Return with keys suitable for reporting
     return {
         'MSE': agg_mse,
         'MAE': agg_mae,
@@ -174,7 +163,7 @@ def compute_drivaernet_metric(gtr_ls: List[torch.Tensor], prd_ls: List[torch.Ten
         prd = prd_ls[idx]
         gtr_norm = (gtr - MEAN)/STD
         prd_norm = (prd - MEAN)/STD
-        # Convert to numpy
+
         gtr_norm = gtr_norm.cpu().numpy()
         prd_norm = prd_norm.cpu().numpy()
 

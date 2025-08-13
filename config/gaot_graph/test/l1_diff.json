@@ -61,7 +61,7 @@
     },
     "dataset": {
         "name": "drivaernet_fullpressure",
-        "metaname": "gnpde-unstructured/drivaernet",
+        "metaname": "incompressible_fluids/drivaernet",
         "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaernet/",
         "train_size": 20,
         "val_size": 10,

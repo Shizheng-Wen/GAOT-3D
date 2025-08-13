@@ -8,7 +8,7 @@ import torch.distributed as dist
 from .optimizers import AdamOptimizer, AdamWOptimizer
 from .utils.setup import manual_seed, load_ckpt, save_ckpt
 from .utils.default_set import SetUpConfig, ModelConfig, DatasetConfig, OptimizerConfig, PathConfig, merge_config
-from ..data.dataset import DATASET_METADATA
+from ..data.metadata import DATASET_METADATA
 
 class TrainerBase:
     """

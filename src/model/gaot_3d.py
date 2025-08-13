@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 from .layers.attn import Transformer, TransformerConfig
 from .layers.magno import MAGNOConfig
-from .layers.magno import GNOEncoder, GNODecoder
+from .layers.magno import MAGNOEncoder, MAGNODecoder
 
 from torch_geometric.data import Batch
 
@@ -51,7 +51,7 @@ class GAOT3D(nn.Module):
         self.decoder = self.init_decoder(self.node_latent_size, output_size, magno_config)
     
     def init_encoder(self, input_size, node_latent_size, magno_config):
-        return GNOEncoder(
+        return MAGNOEncoder(
             in_channels = input_size,
             out_channels = node_latent_size,
             gno_config = magno_config
@@ -76,8 +76,8 @@ class GAOT3D(nn.Module):
         )
 
     def init_decoder(self, node_latent_size, output_size, magno_config):
-        # Initialize the GNO decoder
-        return GNODecoder(
+        # Initialize the MAGNO decoder
+        return MAGNODecoder(
             in_channels=node_latent_size,
             out_channels=output_size,
             gno_config=magno_config

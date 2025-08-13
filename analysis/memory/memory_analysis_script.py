@@ -32,7 +32,7 @@ warnings.filterwarnings('ignore')
 # 添加src路径以导入项目模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from src.model.layers.magno import GNOEncoder, GNODecoder, MAGNOConfig
+from src.model.layers.magno import MAGNOEncoder, MAGNODecoder, MAGNOConfig
 from src.model.gaot_3d import GAOT3D
 from src.model.layers.integral_transform import IntegralTransform
 
@@ -166,7 +166,7 @@ class ComponentTester:
         
         try:
             # 创建encoder
-            encoder = GNOEncoder(
+            encoder = MAGNOEncoder(
                 in_channels=self.config.input_channels,
                 out_channels=self.config.lifting_channels,
                 gno_config=self.magno_config

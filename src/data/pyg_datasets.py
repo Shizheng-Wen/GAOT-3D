@@ -28,7 +28,6 @@ class EnrichedData(Data):
              # Counts should not be incremented during batching
              return torch.tensor([0] * value.dim(), dtype=torch.long) # Or return 0 for scalar? Check PyG docs if needed. Assuming tensor counts.
         else:
-            # Default PyG behavior for other attributes (like standard edge_index, face, etc.)
             return super().__inc__(key, value, *args, **kwargs)
 
 class VTKMeshDataset(Dataset):

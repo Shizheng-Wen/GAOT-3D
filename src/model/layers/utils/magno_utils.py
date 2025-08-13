@@ -11,7 +11,6 @@ from torch_cluster import radius as torch_cluster_radius
 # neighbor_search
 #############
 
-
 class NeighborSearch(nn.Module):
     """
     Neighborhood search between two arbitrary coordinate meshes.
@@ -31,8 +30,8 @@ class NeighborSearch(nn.Module):
         if use_torch_cluster:
             self.search_fn = self._torch_cluster_search
             self.use_torch_cluster = True
-        else: # slower fallback, works on GPU and CPU
-            self.search_fn = self._native_neighbor_search # Use internal name
+        else:
+            self.search_fn = self._native_neighbor_search 
             self.use_torch_cluster = False
 
     def _torch_cluster_search(self, data, queries, radi, device = "cpu"):
@@ -119,6 +118,7 @@ class NeighborSearch(nn.Module):
             'neighbors_index': result_dict['neighbors_index'].cpu(),
             'neighbors_row_splits': result_dict['neighbors_row_splits'].cpu()
         }
+
 
 def native_neighbor_search(data: torch.Tensor, queries: torch.Tensor, radius: torch.Tensor):
     """
@@ -248,6 +248,7 @@ def segment_csr(
                     to_reduce /= n_nbrs
                 out[to_idx] += to_reduce
         return out
+
 
 class Activation(nn.Module):
     """

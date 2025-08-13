@@ -23,7 +23,7 @@ class EncoderOnlyModel(nn.Module):
     
     def __init__(self, input_size, output_size, magno_config):
         super().__init__()
-        from src.model.layers.magno import GNOEncoder
+        from src.model.layers.magno import MAGNOEncoder
         
         self.input_size = input_size
         self.output_size = output_size
@@ -47,7 +47,7 @@ class EncoderOnlyModel(nn.Module):
         self.register_buffer('latent_tokens', internal_latent_tokens)
         
         # 只使用encoder
-        self.encoder = GNOEncoder(
+        self.encoder = MAGNOEncoder(
             in_channels=input_size,
             out_channels=self.node_latent_size,
             gno_config=magno_config

@@ -6,13 +6,8 @@ from typing import Literal, Optional, Tuple
 import importlib
 
 from .mlp import LinearChannelMLP
-
-from torch_geometric.utils import dropout_edge
-
-# --- torch_scatter check ---
 try:
     import torch_scatter
-    # Check specifically for the 'scatter' function
     if hasattr(torch_scatter, 'scatter'):
         scatter = torch_scatter.scatter
         HAS_TORCH_SCATTER = True
@@ -56,7 +51,6 @@ class IntegralTransform(nn.Module):
         else:
             self.channel_mlp = channel_mlp
         
-        # InitiWarning: 'max_neighbors' sampling strategy with PyG edge_index is less efficient. Consider using 'ratio'.alize attention projections if needed
         if self.use_attn:
             if coord_dim is None:
                 raise ValueError("coord_dim must be specified when use_attn is True")
@@ -111,27 +105,22 @@ class IntegralTransform(nn.Module):
 
         num_sampled_edges = sampled_edge_index.shape[1]
         if num_sampled_edges == 0:
-            # Handle no neighbors
             output_channels = self.channel_mlp.fcs[-1].out_features
-            output_shape = [num_query_nodes, output_channels] # Non-batched shape
-            if batch_x is not None and f_y is not None and f_y.ndim == 3: # Check if input was batched
-                 # This case is ambiguous - if f_y was [B, N, C], output should be?
-                 # Let's assume f_y is [TotalNodes, C] for PyG batching
-                 pass # Output shape remains [TotalNodes_x, C_out]
+            output_shape = [num_query_nodes, output_channels] 
+            if batch_x is not None and f_y is not None and f_y.ndim == 3: 
+                pass 
             return torch.zeros(output_shape, device=device, dtype=self.channel_mlp.fcs[-1].weight.dtype)
-        # --- End Neighbor Sampling ---
-
 
         query_idx = sampled_edge_index[1].long()
         source_idx = sampled_edge_index[0].long()
 
-        rep_features_pos = y_pos[source_idx]   # Source node coords [NumSampledEdges, D]
+        rep_features_pos = y_pos[source_idx]    # Source node coords [NumSampledEdges, D]
         self_features_pos = x_pos[query_idx]    # Query node coords [NumSampledEdges, D]
 
         in_features = None
         if f_y is not None:
              # Assume f_y is [TotalNodes_y, C_in]
-             in_features = f_y[source_idx] # Source node features [NumSampledEdges, C_in]
+             in_features = f_y[source_idx]      # Source node features [NumSampledEdges, C_in]
 
 
         # --- Attention Logic ---
@@ -176,13 +165,12 @@ class IntegralTransform(nn.Module):
         out_features = scatter(
             src=rep_features_transformed,
             index=query_idx.long(),
-            dim=0,                   # Aggregate along the edge dimension
-            dim_size=num_query_nodes,# Output size is number of query nodes
+            dim=0,                  
+            dim_size=num_query_nodes,
             reduce=reduction
         )
-        # Handle 'max'/'min' return tuple if using torch_scatter.scatter
         if HAS_TORCH_SCATTER and (reduction == "max" or reduction=="min"):
-             out_features = out_features[0] # Keep only the values, discard argmax/argmin
+             out_features = out_features[0] 
 
         return out_features
 
