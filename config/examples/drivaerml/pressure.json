@@ -4,13 +4,12 @@
         "device": "cuda:0",
         "dtype": "torch.float32",
         "trainer_name": "static3d",
-        "train": false,
-        "test": true,
+        "train": true,
+        "test": false,
         "ckpt": false,
         "use_variance_test": false,
         "distributed": false
     },
-
     "model": {
         "name": "gaot_3d",
         "use_conditional_norm": false,
@@ -19,13 +18,15 @@
             "magno": {
                 "use_gno": true,
                 "gno_coord_dim": 3,
-                "neighbor_strategy": "bidirectional",
-                "projection_channels": 256,
-                "in_gno_channel_mlp_hidden_layers": [64,64,64],
-                "out_gno_channel_mlp_hidden_layers": [64,64],
+                "neighbor_strategy": ["bidirectional", "bidirectional"],
+                "mlp_type": "linear",
+                "projection_channels": 128,
+                "in_gno_channel_mlp_hidden_layers": [32,32],
+                "out_gno_channel_mlp_hidden_layers": [32,32],
                 "lifting_channels": 32,
-                "gno_radius": 0.033,
+                "gno_radius": 0.020,
                 "gno_use_torch_cluster": true,
+                "use_attn": true,
                 "attention_type": "cosine",
                 "use_geoembed": true,
                 "embedding_method": "statistical",
@@ -49,7 +50,7 @@
                     "num_kv_heads": 8,
                     "use_conditional_norm": false,
                     "cond_norm_hidden_size": 4,
-                    "atten_dropout": 0.2
+                    "atten_dropout": 0.0
                 },
                 "ffn_config": {
                     "hidden_size": 1024,
@@ -60,12 +61,14 @@
         }
     },
     "dataset": {
-        "name": "drivaernet_fullpressure",
-        "metaname": "incompressible_fluids/drivaernet",
-        "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaernet/",
-        "train_size": 20,
-        "val_size": 10,
-        "test_size": 1,
+        "name": "drivaerml_fullpressure",
+        "metaname": "incompressible_fluids/drivaerml_pressure",
+        "base_path": "/cluster/work/math/camlab-data/graphnpde/drivaerml/",
+        "processed_folder": "processed_pyg_p",
+        "force_recompute_stats": false,
+        "train_size": 400,
+        "val_size": 34,
+        "test_size": 50,
         "batch_size": 1,
         "num_workers": 4,
         "shuffle": true,
@@ -75,21 +78,21 @@
     "optimizer": {
         "name": "adamw",
         "args": {
-            "lr": 1e-3,
+            "lr": 1e-4,
             "weight_decay": 1e-05,
-            "epoch": 4,
+            "epoch": 200,
             "loss_scale": 1.0,
             "eval_every_eps": 2,
             "scheduler": "mix",
-            "max_lr": 1e-3,
-            "min_lr": 1e-4,
-            "final_lr": 1e-5
+            "max_lr": 1e-4,
+            "min_lr": 1e-5,
+            "final_lr": 5e-6
         }
     },
     "path": {
-        "ckpt_path": ".ckpt/gaot_graph/test/l1.pt",
-        "loss_path": ".loss/gaot_graph/test/l1.png",
-        "result_path": ".results/gaot_graph/test/l1.png",
-        "database_path": ".database/gaot_graph/test/l1.csv"
+        "ckpt_path": ".ckpt/drivaerml/pressure_new.pt",
+        "loss_path": ".loss/drivaerml/pressure_new.png",
+        "result_path": ".results/drivaerml/pressure_new.png",
+        "database_path": ".database/drivaerml/pressure_new.csv"
     }
 }

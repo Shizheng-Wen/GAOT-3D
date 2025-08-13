@@ -4,8 +4,8 @@
         "device": "cuda:0",
         "dtype": "torch.float32",
         "trainer_name": "static3d",
-        "train": false,
-        "test": true,
+        "train": true,
+        "test": false,
         "ckpt": false,
         "use_variance_test": false,
         "distributed": true
