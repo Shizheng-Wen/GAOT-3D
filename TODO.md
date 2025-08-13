@@ -1,0 +1,2 @@
+- [x] integrate the neural field into the same branch.
+- [x] upate the edge masking strategy. put it in the magno encoder and deocoder. not in the integral transform.

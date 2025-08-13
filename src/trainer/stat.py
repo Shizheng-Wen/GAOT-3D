@@ -3,6 +3,7 @@ import torch
 from torch.utils.data.distributed import DistributedSampler
 from torch_geometric.loader import DataLoader as PyGDataLoader 
 from torch_geometric.transforms import Compose
+from torch_geometric.data import Data, Batch
 import torch_geometric as pyg
 
 import numpy as np
@@ -39,6 +40,15 @@ class StaticTrainer3D(TrainerBase):
 
     def __init__(self, args):
         super().__init__(args)
+        
+        # Validate neural_field training strategy configuration
+        if self.dataset_config.training_strategy == 'neural_field':
+            if self.dataset_config.update_pt_files_with_edges:
+                raise ValueError("neural_field training strategy requires update_pt_files_with_edges=False")
+            if getattr(self.model_config.args.magno, 'precompute_edges', True):
+                print("WARNING: neural_field training strategy requires precompute_edges=False, "
+                      "setting it to False automatically.")
+                self.model_config.args.magno.precompute_edges = False
 
     def _calculate_or_load_stats(self, dataset_config, order_file_path, data_root):
         """Calculates or loads normalization statistics."""
@@ -120,137 +130,7 @@ class StaticTrainer3D(TrainerBase):
              raise RuntimeError("Normalization mean/std could not be calculated or loaded.")
         self.u_mean = self.u_mean.to(self.dtype)
         self.u_std = self.u_std.to(self.dtype)
-   
-    def __update_pt_files_with_edges(self, dataset_config, order_file_path, gno_config, downsample_nodes=8200000):
-        """
-        Iterates through processed .pt files, computes edges (and optionally counts),
-        and saves them back to the files. Runs ONLY on rank 0 in DDP.
-        
-        Args:
-            downsample_nodes (int, optional): If specified, downsample to this many nodes
-        """
-        if self.setup_config.rank != 0:
-            return
-        
-        processed_dir = os.path.join(dataset_config.base_path, dataset_config.processed_folder)
-        if not os.path.isdir(processed_dir):
-             raise FileNotFoundError(f"Processed directory for update not found: {processed_dir}")
-        
-        with open(order_file_path, 'r') as f:
-            all_filenames_base = [line.strip() for line in f if line.strip()]
-        total_samples = len(all_filenames_base)
-        train_size = dataset_config.train_size
-        val_size = dataset_config.val_size
-        # Test size calculation depends on how split was done previously
-        test_size = dataset_config.test_size
-        indices = np.arange(total_samples) 
-        # Note: rand_dataset shuffling is NOT applied here, we process based on original order file names
-        train_indices = indices[:train_size]
-        val_indices = indices[train_size : train_size + val_size]
-        test_indices = indices[-test_size:] 
-        relevant_indices = np.concatenate([train_indices, val_indices, test_indices])
-        filenames_to_process = [f"{all_filenames_base[i]}.pt" for i in relevant_indices]
 
-        downsample_info = f" (下采样到 {downsample_nodes:,} 节点)" if downsample_nodes else ""
-        print(f"Rank 0: Checking/Updating {len(filenames_to_process)} '.pt' files in {processed_dir} with edge information{downsample_info}...")
-
-        latent_tokens_cpu = self.latent_tokens.cpu()
-        num_latent_tokens = latent_tokens_cpu.shape[0]
-
-        from src.model.layers.magno import get_neighbor_strategy, parse_neighbor_strategy
-        for filename in tqdm(filenames_to_process, desc="Updating .pt files"):
-            fpath = os.path.join(processed_dir, filename)
-            fpath_tmp = fpath + ".tmp"
-            try:
-                data_old = torch.load(fpath, map_location='cpu')
-                
-                # 应用下采样（如果指定）
-                pos_original = data_old.pos
-                x_original = data_old.x
-                
-                if downsample_nodes and pos_original.shape[0] > downsample_nodes:
-                    print(f"  下采样 {filename}: {pos_original.shape[0]:,} -> {downsample_nodes:,} 节点")
-                    # 随机采样节点索引
-                    total_nodes = pos_original.shape[0]
-                    # 使用固定种子确保可重现性
-                    torch.manual_seed(42)
-                    sampled_indices = torch.randperm(total_nodes)[:downsample_nodes]
-                    sampled_indices = sampled_indices.sort()[0]  # 保持索引顺序
-                    
-                    # 应用采样
-                    pos_sampled = pos_original[sampled_indices]
-                    x_sampled = x_original[sampled_indices]
-                    
-                    print(f"    采样前: pos={pos_original.shape}, x={x_original.shape}")
-                    print(f"    采样后: pos={pos_sampled.shape}, x={x_sampled.shape}")
-                    
-                    data = EnrichedData(pos=pos_sampled, x=x_sampled)
-                else:
-                    data = EnrichedData(pos=pos_original, x=x_original)
-                
-                # 复制其他属性（除了pos和x）
-                for attr, value in data_old:
-                     if attr not in ['pos', 'x']: 
-                         setattr(data, attr, value)
-                data.num_latent_nodes = num_latent_tokens
-                
-                if dataset_config.use_rescale_new:
-                    phys_pos = rescale_new(data.pos.to(torch.float), (-1, 1), self.metadata.domain_x)
-                else:
-                    phys_pos = rescale(data.pos.to(torch.float), (-1, 1)) # Rescale to [-1, 1], very important!
-                num_physical_nodes = phys_pos.shape[0]
-                batch_idx_phys = torch.zeros(num_physical_nodes, dtype=torch.long)
-                batch_idx_latent = torch.zeros(num_latent_tokens, dtype=torch.long)
-
-                for scale_idx, scale in enumerate(gno_config.scales):
-                    scaled_radius = gno_config.gno_radius * scale
-                    # --- Parse neighbor strategy ---
-                    encoder_strategy, decoder_strategy = parse_neighbor_strategy(gno_config.neighbor_strategy)
-                    # --- Encoder Edges ---
-                    enc_edge_index = get_neighbor_strategy(
-                        neighbor_strategy=encoder_strategy,
-                        phys_pos = phys_pos,
-                        batch_idx_phys = batch_idx_phys,
-                        latent_tokens_pos = latent_tokens_cpu,
-                        batch_idx_latent = batch_idx_latent,
-                        radius=scaled_radius,
-                        k_neighbors=gno_config.k_neighbors,                  
-                        is_decoder=False                 
-                    ).to(torch.int32)
-                    setattr(data, f'encoder_edge_index_s{scale_idx}', enc_edge_index)
-                    if enc_edge_index.numel() > 0:
-                        enc_counts = torch.bincount(enc_edge_index[1], minlength=num_latent_tokens).to(torch.int32)
-                    else:
-                        enc_counts = torch.zeros(num_latent_tokens, dtype=torch.int32)
-                    setattr(data, f'encoder_query_counts_s{scale_idx}', enc_counts)
-                    # --- Decoder Edges ---
-                    dec_edge_index = get_neighbor_strategy(
-                        neighbor_strategy=decoder_strategy,
-                        phys_pos = phys_pos,             
-                        batch_idx_phys = batch_idx_phys, 
-                        latent_tokens_pos = latent_tokens_cpu, 
-                        batch_idx_latent = batch_idx_latent,   
-                        radius=scaled_radius,
-                        k_neighbors=gno_config.k_neighbors, 
-                        is_decoder=True                  
-                    ).to(torch.int32)
-                    setattr(data, f'decoder_edge_index_s{scale_idx}', dec_edge_index)
-                    if dec_edge_index.numel() > 0:
-                        dec_counts = torch.bincount(dec_edge_index[1], minlength=num_physical_nodes).to(torch.int32)
-                    else:
-                        dec_counts = torch.zeros(num_physical_nodes, dtype=torch.int32)
-                    setattr(data, f'decoder_query_counts_s{scale_idx}', dec_counts)
-                # --- Save updated data ---
-                torch.save(data, fpath_tmp)
-                os.replace(fpath_tmp, fpath)
-            except FileNotFoundError:
-                print(f"Warning: File not found during update: {fpath}")
-            except Exception as e:
-                print(f"Error processing file {fpath}: {e}")
-                if os.path.exists(fpath_tmp):
-                     os.remove(fpath_tmp)
-        print(f"Rank 0: Finished checking/updating '.pt' files.")
-   
     def _update_pt_files_with_edges(self, dataset_config, order_file_path, gno_config):
         """
         Iterates through processed .pt files, computes edges (and optionally counts),
@@ -526,17 +406,132 @@ class StaticTrainer3D(TrainerBase):
                 output_device=self.setup_config.local_rank
             )
         
+    def _sample_nodes_neural_field(self, batch: "pyg.data.Batch", num_input_nodes: int, num_query_nodes: int):
+        """
+        Sample nodes for neural field training strategy.
+        
+        Args:
+            batch: Original batch
+            num_input_nodes: Number of nodes to sample for encoder input
+            num_query_nodes: Number of nodes to sample for decoder query
+            
+        Returns:
+            sampled_batch: New batch with sampled nodes for encoder
+            query_pos: Query positions for decoder  
+            query_batch_idx: Batch indices for query positions
+            target_for_loss: Target values for loss calculation
+        """
+        sampled_data_list = []
+        query_pos_list = []
+        query_batch_idx_list = []
+        target_for_loss_list = []
+        
+        use_same_sampling = (num_input_nodes == num_query_nodes)
+        
+        for i in range(batch.num_graphs):
+            # Get full data for graph i
+            start_idx = batch.ptr[i]
+            end_idx = batch.ptr[i+1]
+            num_full_nodes_i = end_idx - start_idx
+            
+            full_pos_i = batch.pos[start_idx:end_idx]
+            full_x_i = batch.x[start_idx:end_idx]
+            
+            # Handle optional c field
+            full_c_i = None
+            if hasattr(batch, 'c') and batch.c is not None:
+                full_c_i = batch.c[start_idx:end_idx]
+            
+            # Sample for encoder input
+            n_input_sample = min(num_input_nodes, num_full_nodes_i)
+            if n_input_sample <= 0:
+                continue
+                
+            input_perm = torch.randperm(num_full_nodes_i)[:n_input_sample]
+            
+            # Sample for decoder query
+            if use_same_sampling:
+                query_perm = input_perm
+                n_query_sample = n_input_sample
+            else:
+                n_query_sample = min(num_query_nodes, num_full_nodes_i)
+                query_perm = torch.randperm(num_full_nodes_i)[:n_query_sample]
+            
+            # Create sampled data for encoder
+            sampled_pos_i = full_pos_i[input_perm]
+            sampled_x_i = full_x_i[input_perm]
+            
+            # Create Data object for this graph
+            data_i = Data(pos=sampled_pos_i, x=sampled_x_i)
+            if full_c_i is not None:
+                data_i.c = full_c_i[input_perm]
+            
+            # Copy other essential attributes (except pre-computed graph info)
+            essential_attrs = ['filename', 'num_latent_nodes']
+            for attr in essential_attrs:
+                if hasattr(batch, attr) and getattr(batch, attr) is not None:
+                    if isinstance(getattr(batch, attr), list):
+                        setattr(data_i, attr, getattr(batch, attr)[i])
+                    else:
+                        # For tensor attributes, we need to slice appropriately
+                        attr_value = getattr(batch, attr)
+                        if attr_value.dim() > 0 and len(attr_value) == batch.num_graphs:
+                            setattr(data_i, attr, attr_value[i])
+            
+            sampled_data_list.append(data_i)
+            
+            # Collect query data
+            query_pos_list.append(full_pos_i[query_perm])
+            query_batch_idx_list.append(torch.full((n_query_sample,), i, dtype=torch.long))
+            target_for_loss_list.append(full_x_i[query_perm])
+        
+        # Create new batch from sampled data
+        sampled_batch = Batch.from_data_list(sampled_data_list)
+        
+        # Concatenate query data
+        query_pos = torch.cat(query_pos_list, dim=0)
+        query_batch_idx = torch.cat(query_batch_idx_list, dim=0)
+        target_for_loss = torch.cat(target_for_loss_list, dim=0)
+        
+        return sampled_batch, query_pos, query_batch_idx, target_for_loss
+
     def train_step(self, batch: "pyg.data.Batch") -> torch.Tensor:
-        batch = batch.to(self.device)
+        strategy = self.dataset_config.training_strategy
         latent_tokens_dev = self.latent_tokens.to(self.device)
 
-        pred = self.model(
-            batch = batch,
-            tokens_pos = latent_tokens_dev
-        )
+        if strategy == 'neural_field':
+            # --- Neural Field Strategy ---
+            num_input_nodes = self.dataset_config.neural_field_input_nodes
+            num_query_nodes = self.dataset_config.neural_field_query_nodes_train
+            
+            # Sample nodes and create new batch (on CPU)
+            sampled_batch, query_pos, query_batch_idx, target_for_loss = self._sample_nodes_neural_field(
+                batch, num_input_nodes, num_query_nodes
+            )
 
-        target = batch.x
-        target = target
+            # Now move to device
+            sampled_batch = sampled_batch.to(self.device)
+            query_pos = query_pos.to(self.device)
+            query_batch_idx = query_batch_idx.to(self.device)
+            target_for_loss = target_for_loss.to(self.device)
+
+            pred = self.model(
+                batch=sampled_batch,
+                tokens_pos=latent_tokens_dev,
+                query_coord_pos=query_pos,
+                query_coord_batch_idx=query_batch_idx
+            )
+            
+            target = target_for_loss
+        else:
+            # Default full_grid strategy: move original batch to device
+            batch = batch.to(self.device)
+            pred = self.model(
+                batch=batch,
+                tokens_pos=latent_tokens_dev
+            )
+            target = batch.x
+
         return self.loss_fn(pred, target)
 
     def validate(self, loader: PyGDataLoader):

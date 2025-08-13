@@ -42,10 +42,6 @@ class IntegralTransform(nn.Module):
         use_attn=None,
         coord_dim=None,
         attention_type='cosine',
-        # Neighbor Sampling Params
-        sampling_strategy: Optional[Literal['max_neighbors', 'ratio']] = None,
-        max_neighbors: Optional[int] = None,
-        sample_ratio: Optional[float] = None
     ):
         super().__init__()
         # parameters for attentional integral transform
@@ -53,14 +49,6 @@ class IntegralTransform(nn.Module):
         self.use_attn = use_attn
         self.coord_dim = coord_dim  
         self.attention_type = attention_type
-        # parameters for neighbor sampling
-        self.sampling_strategy = sampling_strategy
-        self.max_neighbors = max_neighbors
-        self.sample_ratio = sample_ratio
-
-        if sampling_strategy == 'max_neighbors':
-            print("Warning: 'max_neighbors' sampling strategy with PyG edge_index is less efficient. Consider using 'ratio'.")
-
         # Init MLP based on channel_mlp or channel_mlp_layers
         if channel_mlp is None:
              if channel_mlp_layers is None: raise ValueError("Need channel_mlp or layers")
@@ -82,61 +70,6 @@ class IntegralTransform(nn.Module):
                 pass
             else:
                 raise ValueError(f"Invalid attention_type: {self.attention_type}. Must be 'cosine' or 'dot_product'.")
-
-    def _apply_neighbor_sampling(
-        self,
-        edge_index: torch.Tensor,
-        num_query_nodes: int, 
-        device: torch.device
-    ) -> torch.Tensor:
-        """Applies neighbor sampling based on the configured strategy."""
-        num_total_original_edges = edge_index.shape[1]
-
-        if num_query_nodes == 0 or num_total_original_edges == 0:
-            return edge_index 
-
-        # --- Strategy 1: Max Neighbors Per Node ---
-        if self.sampling_strategy == 'max_neighbors':
-            # This remains tricky to vectorize efficiently with edge_index.
-            # Using a loop over nodes requiring sampling is often the clearest.
-            # PyG's dropout_adj has ratio-based, not max-count based logic.
-            # print("Warning: 'max_neighbors' sampling strategy with PyG edge_index is less efficient. Consider using 'ratio'.")
-
-            dest_nodes = edge_index[1] 
-            counts = torch.bincount(dest_nodes, minlength=num_query_nodes)
-            needs_sampling_mask = counts > self.max_neighbors
-
-            if not torch.any(needs_sampling_mask):
-                return edge_index 
-
-            keep_mask = torch.ones(num_total_original_edges, dtype=torch.bool, device=device)
-            queries_to_sample_idx = torch.where(needs_sampling_mask)[0]
-
-            for i in queries_to_sample_idx:
-                node_edge_mask = (dest_nodes == i)
-                node_edge_indices = torch.where(node_edge_mask)[0]
-                num_node_edges = len(node_edge_indices) 
-
-                perm = torch.randperm(num_node_edges, device=device)[:self.max_neighbors]
-                edges_to_keep_for_node = node_edge_indices[perm]
-                # Update mask: keep only sampled edges for this node
-                node_keep_mask = torch.zeros_like(node_edge_mask) 
-                node_keep_mask[edges_to_keep_for_node] = True
-                keep_mask[node_edge_mask] = node_keep_mask[node_edge_mask]
-
-            sampled_edge_index = edge_index[:, keep_mask]
-            return sampled_edge_index
-
-        # --- Strategy 2: Global Ratio Sampling ---
-        elif self.sampling_strategy == 'ratio':
-            if self.sample_ratio >= 1.0:
-                 return edge_index
-            p_drop = 1.0 - self.sample_ratio
-            sampled_edge_index, _ = dropout_edge(edge_index, p=p_drop, force_undirected=False, training=self.training)
-            return sampled_edge_index
-
-        else:
-             raise ValueError(f"Invalid sampling strategy: {self.sampling_strategy}")
 
     def _segment_softmax_pyg(self, scores: torch.Tensor, index: torch.Tensor, dim_size: int) -> torch.Tensor:
         """Applies softmax per segment based on index using torch_scatter."""
@@ -174,11 +107,7 @@ class IntegralTransform(nn.Module):
         device = x_pos.device
         num_query_nodes = x_pos.shape[0]
 
-        # --- Apply Neighbor Sampling ---
-        if self.sampling_strategy is not None:
-            sampled_edge_index = self._apply_neighbor_sampling(edge_index.to(device), num_query_nodes, device)
-        else:
-            sampled_edge_index = edge_index.to(device)
+        sampled_edge_index = edge_index.to(device)
 
         num_sampled_edges = sampled_edge_index.shape[1]
         if num_sampled_edges == 0:

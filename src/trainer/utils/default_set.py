@@ -64,6 +64,10 @@ class DatasetConfig:
     # for graph building
     update_pt_files_with_edges: bool = False                               # Flag to trigger edge computation/saving
     use_rescale_new: bool = False                                          # Whether to use new rescale methods for coordinates
+    # for neural field training strategy
+    training_strategy: str = "full_grid"                                   # Training strategy: ['neural_field', 'full_grid']
+    neural_field_input_nodes: Optional[int] = 40000                        # Num nodes for fixed encoder input in neural_field strategy
+    neural_field_query_nodes_train: Optional[int] = 40000                  # Num nodes for random decoder query in neural_field train
 
 @dataclass
 class OptimizerConfig:

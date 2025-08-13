@@ -98,7 +98,37 @@ All experiment parameters are managed through configuration files (JSON or TOML 
 For a detailed explanation of all configuration options and their default values, refer to `src/trainer/utils/default_set.py`.
 
 Example configuration files are provided in `config/examples/drivaernet/`.
-
+```mermaid
+graph TD
+    A[get_neighbor_strategy] --> B{is_decoder?}
+    
+    B -->|False| C[_get_encoder_strategy]
+    B -->|True| D[_get_decoder_strategy]
+    
+    C --> C1{strategy type}
+    C1 -->|knn| C2["Each phys point<br/>→ k nearest latent tokens<br/>Direction: phys → latent"]
+    C1 -->|radius| C3["Latent as center<br/>→ phys within radius<br/>Direction: phys → latent"]
+    C1 -->|bidirectional| C4["Combine knn + radius<br/>Direction: phys → latent"]
+    
+    D --> D1{strategy type}
+    D1 -->|knn| D2["Each phys point<br/>→ k nearest latent tokens<br/>Direction: latent → phys"]
+    D1 -->|radius| D3["Phys as center<br/>→ latent within radius<br/>Direction: latent → phys"]
+    D1 -->|bidirectional| D4["Combine knn + radius<br/>Direction: latent → phys"]
+    D1 -->|reverse| D5["Use encoder graph<br/>and reverse it<br/>Direction: latent → phys"]
+    
+    C2 --> E[return edge_index]
+    C3 --> E
+    C4 --> E
+    D2 --> E
+    D3 --> E
+    D4 --> E
+    D5 --> E
+    
+    style A fill:#e1f5fe
+    style C fill:#f3e5f5
+    style D fill:#e8f5e8
+    style E fill:#fff3e0
+```
 ### Training
 
 To train a model, execute `main.py` with the path to your configuration file:
