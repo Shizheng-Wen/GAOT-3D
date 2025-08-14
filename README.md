@@ -13,7 +13,7 @@ We evaluated our model on three industry-scale datasets:
 Paper: **"Geometry Aware Operator Transformer as an efficient and accurate neural surrogate for PDEs on arbitrary domains".**
 
 ## Updates
-***13/09/2025***
+***13/08/2025***
 
 1. Providing a more flexible graph-building strategy to effectively control the explosion in the number of edges in 3D scenarios.
 2. Implemented a more flexible geometric embedding module, allowing it to be applied only in the encoder or only in the decoder if desired.
