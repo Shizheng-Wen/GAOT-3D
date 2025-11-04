@@ -13,7 +13,13 @@ We evaluated our model on three industry-scale datasets:
 Paper: **"Geometry Aware Operator Transformer as an efficient and accurate neural surrogate for PDEs on arbitrary domains".**
 
 ## Updates
-***13/08/2025***
+***04/11/2025***
+1. We provide the script for preprocessing the 3D dataset - DrivAerNet++
+2. Update the config files and add the wandb for easily tracking the experiments.
+3. Add the asychronous online-graph building strategy.
+
+
+***13/09/2025***
 
 1. Providing a more flexible graph-building strategy to effectively control the explosion in the number of edges in 3D scenarios.
 2. Implemented a more flexible geometric embedding module, allowing it to be applied only in the encoder or only in the decoder if desired.
@@ -53,7 +59,7 @@ Paper: **"Geometry Aware Operator Transformer as an efficient and accurate neura
 *Metrics are scaled: MSE (×10⁻²), Mean AE (×10⁻¹)*
 | **Model** | **Pressure MSE** | **Pressure Mean AE** | **WSS MSE** | **WSS Mean AE** |
 |-------------------|------------------|-----------------------|-------------|------------------|
-| GAOT              | 4.9409           | 1.1017                | 8.7370      | 1.5674           |
+| GAOT              | 4.2694           | 1.0699                | 8.6878      | 1.5429           |
 | FIGConvNet        | 4.9900           | 1.2200                | 9.8600      | 2.2200           |
 | TripNet           | 5.1400           | 1.2500                | 9.5200      | 2.1500           |
 | RegDGCNN          | 8.2900           | 1.6100                | 13.8200     | 3.6400           |
@@ -119,13 +125,13 @@ graph TD
 This model is primarily evaluated on the DrivAerNet++ dataset for surface pressure and wall shear stress prediction.
 
 1.  **Download Data:** Obtain the original VTK files from the official [DrivAerNet repository](https://github.com/Mohamedelrefaie/DrivAerNet).
-2.  **Organize Data:** Follow the instructions in the DrivAerNet++ repository regarding the order and naming of training and testing samples. Create an `order_use.txt` file (or similar, as referenced in `src/trainer/stat.py`) in your `dataset.base_path` directory, listing the base names of the VTK files in the desired sequence.
+2.  **Organize Data:** Follow the instructions in the DrivAerNet++ repository regarding the order and naming of training and testing samples. Create an `order_use.txt` file (or similar, as referenced in `src/trainer/stat.py`) in your `dataset.base_path` directory, listing the base names of the VTK files in the desired sequence. We provide an example `dataset/drivaernet/order_use.txt`. 
 3.  **Preprocess Data:**
     Convert the raw VTK files into PyTorch Geometric (`.pt`) files using the provided script:
     ```bash
-    python dataset/drivaernet/drivaer_process.py
+    python dataset/drivaernet/drivaer_process_pressure.py
     ```
-    * You might need to adjust paths and parameters within `drivaer_process.py` (e.g., `base_path`, `order_file`, `pressure_key`, `output_dir`).
+    * You might need to adjust paths and parameters within `drivaer_process_pressure.py` (e.g., `base_path`, `order_file`, `pressure_key`, `output_dir`).
     * The processed data will be stored in the directory specified by `output_dir` in the script, which should correspond to `{dataset.base_path}/{dataset.processed_folder}` in your configuration file.
 
 4.  **Update Graph Structures (Optional but Recommended for Efficiency):**

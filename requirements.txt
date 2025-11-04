@@ -10,7 +10,5 @@ matplotlib
 seaborn
 scikit-learn
 pyvista
-torch-scatter
-torch-cluster
 rotary-embedding-torch
 scipy

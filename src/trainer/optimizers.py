@@ -6,6 +6,8 @@ import numpy as np
 import time
 from copy import deepcopy
 from dataclasses import dataclass, field
+import psutil
+import os
 
 ###############
 # Config
@@ -28,6 +30,9 @@ class OptimizerargsConfig:
     scheduler_gamma: float = 0.8        # Multiplicative factor for learning rate decay in StepLR scheduler
     scheduler_T_max: int = 100          # Maximum number of iterations (usually total epochs) for CosineAnnealingLR scheduler
     scheduler_eta_min: float = 1e-4     # Minimum learning rate for CosineAnnealingLR scheduler
+
+    # checkpoint/save settings
+    save_every_epochs: int = 0          # Save checkpoint every N epochs (0=disabled)
 
 ###############
 # Scheduler
@@ -124,8 +129,14 @@ class AdamOptimizer:
         val_epochs = []
         val_losses = []
 
-        pbar = tqdm(total=self.epoch, desc=description, colour = color)
+        # Only rank 0 should display progress bar
+        disable_pbar = hasattr(trainer.setup_config, 'rank') and trainer.setup_config.rank != 0
+        pbar = tqdm(total=self.epoch, desc=description, colour = color, disable=disable_pbar)
         for epoch in range(self.epoch):
+            # Ensure DistributedSampler shuffles differently each epoch
+            train_sampler = getattr(trainer.train_loader, 'sampler', None)
+            if hasattr(train_sampler, 'set_epoch'):
+                train_sampler.set_epoch(epoch)
             trainer.model.train()
             total_loss = 0.0
             for batch in trainer.train_loader:
@@ -135,7 +146,7 @@ class AdamOptimizer:
                 train_loss.backward()
                 self.optimizer.step()
                 total_loss += train_loss.item()
-                if trainer.device.startswith('cuda'):
+                if isinstance(trainer.device, torch.device) and trainer.device.type == 'cuda':
                     torch.cuda.synchronize()
                 time_total += time.time() - start_time
             
@@ -149,7 +160,8 @@ class AdamOptimizer:
                 losses.append(train_loss)
                 epochs.append(epoch)
                 val_loss = trainer.validate(trainer.val_loader)
-                pbar.set_postfix({"loss": train_loss, "val_loss": val_loss})
+                if not disable_pbar:
+                    pbar.set_postfix({"loss": train_loss, "val_loss": val_loss})
                 val_losses.append(val_loss)
                 val_epochs.append(epoch)
 
@@ -166,7 +178,8 @@ class AdamOptimizer:
         if best_state is not None:
             trainer.model.load_state_dict(best_state)
 
-        pbar.close()
+        if not disable_pbar:
+            pbar.close()
         
         return {
             "train":{
@@ -244,8 +257,14 @@ class AdamWOptimizer:
         val_epochs = []
         val_losses = []
 
-        pbar = tqdm(total=self.epoch, desc=description, colour=color)
+        # Only rank 0 should display progress bar
+        disable_pbar = hasattr(trainer.setup_config, 'rank') and trainer.setup_config.rank != 0
+        pbar = tqdm(total=self.epoch, desc=description, colour=color, disable=disable_pbar)
         for epoch in range(self.epoch):
+            # Ensure DistributedSampler shuffles differently each epoch
+            train_sampler = getattr(trainer.train_loader, 'sampler', None)
+            if hasattr(train_sampler, 'set_epoch'):
+                train_sampler.set_epoch(epoch)
             trainer.model.train()
             total_loss = 0.0
             for batch in trainer.train_loader:
@@ -256,9 +275,6 @@ class AdamWOptimizer:
                 self.optimizer.step()
 
                 total_loss += train_loss.detach()
-                # if trainer.device.type == 'cuda':
-                #     torch.cuda.synchronize()
-                # time_total += time.time() - start_time
 
             if self.scheduler is not None:
                 self.scheduler.step()
@@ -269,10 +285,21 @@ class AdamWOptimizer:
                 train_loss = total_loss.cpu().item() / len(trainer.train_loader)
                 losses.append(train_loss)
                 epochs.append(epoch)
-                val_loss = trainer.validate(trainer.val_loader)
-                pbar.set_postfix({"loss": train_loss, "val_loss": val_loss})
+                val_loss = trainer.validate(trainer.test_loader) # TODO: change to val_loader
+                current_lr = self.optimizer.param_groups[0]['lr']
+
+                if not disable_pbar:
+                    pbar.set_postfix({"loss": train_loss, "val_loss": val_loss})
+                metrics = {
+                    'train/loss': train_loss,
+                    'val/loss': val_loss,
+                    'lr': current_lr,
+                }
                 val_losses.append(val_loss)
                 val_epochs.append(epoch)
+
+                metrics['memory'] = psutil.Process(os.getpid()).memory_info().rss/1e9
+                trainer.log_metrics(metrics, step = epoch + 1)
 
                 if self.early_save_metric == 'val':
                     current_loss = val_loss
@@ -283,11 +310,23 @@ class AdamWOptimizer:
                     best_loss = current_loss
                     best_epoch = epoch
                     best_state = deepcopy(trainer.model.state_dict())
+                
+                 # Save checkpoint every N epochs if configured (rank 0 only)
+                if (getattr(trainer.optimizer_config.args, 'save_every_epochs', 0) > 0
+                    and (epoch + 1) % trainer.optimizer_config.args.save_every_epochs == 0
+                    and getattr(trainer.setup_config, 'rank', 0) == 0):
+                    try:
+                        trainer.save_checkpoint_artifact(epoch + 1, train_loss, val_loss, is_best=False)
+                        if getattr(trainer.setup_config, 'test_during_training', False):
+                            trainer.test()
+                    except Exception:
+                        pass
 
         if best_state is not None:
             trainer.model.load_state_dict(best_state)
 
-        pbar.close()
+        if not disable_pbar:
+            pbar.close()
 
         return {
             "train": {

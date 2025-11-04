@@ -125,9 +125,11 @@ class VTKMeshDataset(Dataset):
     def get(self, idx):
         filepath = os.path.join(self.processed_dir, self.split_filenames[idx])
         try:
-            data = torch.load(filepath)
+            data = torch.load(filepath, weights_only=False)
             if self.active_variables is not None and hasattr(data, 'x') and data.x is not None:
                 data.x = data.x[:, self.active_variables]
+            if len(data.x.shape) == 3:
+                data.x = data.x.squeeze(-1)
             # Apply normalization here if stats are available and not done in preprocessing
             # Example:
             # if hasattr(self, 'mean') and hasattr(self, 'std'):
@@ -137,4 +139,4 @@ class VTKMeshDataset(Dataset):
             raise FileNotFoundError(f"Processed file not found: {filepath}. Ensure preprocessing script was run.")
         except Exception as e:
             print(f"Error loading data for index {idx} (file: {filepath}): {e}")
-            raise e 
+            raise e

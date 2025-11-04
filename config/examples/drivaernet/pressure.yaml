@@ -1,0 +1,101 @@
+setup:
+    seed: 42
+    device: "cuda:0"
+    dtype: "torch.float32"
+    trainer_name: "static3d"
+    train: true
+    test: false
+    ckpt: false
+    use_variance_test: false
+    distributed: false
+
+    # --- wandb settings for quick smoke run ---
+    wandb: false
+    wandb_project: GAOT-CRV
+    wandb_entity: null
+    wandb_run_name: gaot-drivaernet-pressure
+    wandb_group: drivaernet
+    wandb_mode: online
+    wandb_tags: ["drivaernet", "pressure", "normals", "gaot"]
+    wandb_watch_model: false
+
+    # --- artifact & checkpoint settings ---
+    test_during_training: false
+    # resume_from_artifact: "model-gino-nasacrm-pressure:best"  # 从artifact加载预训练模型
+
+model:
+    name: "gaot_3d"
+    use_conditional_norm: false
+    args:
+        latent_tokens: [64,64,32]
+        magno:
+            use_gno: true
+            gno_coord_dim: 3
+            neighbor_strategy: "bidirectional"
+            projection_channels: 256
+            in_gno_channel_mlp_hidden_layers: [64,64,64]
+            out_gno_channel_mlp_hidden_layers: [64,64]
+            lifting_channels: 32
+            gno_radius: 0.033
+            gno_use_torch_cluster: true
+            attention_type: "cosine"
+            use_geoembed: [true, false]
+            embedding_method: "statistical"
+            encoder_feature_attr: ["pos","c"]
+            mlp_type: "linear"
+            precompute_edges: true
+            asynchronous_graph_building: false
+        transformer:
+            patch_size: 2
+            hidden_size: 256
+            use_attn_norm: true
+            use_ffn_norm: true
+            norm_eps: 1e-06
+            num_layers: 10
+            positional_embedding: "rope"
+            use_long_range_skip: true
+            attn_config:
+                hidden_size: 256
+                num_heads: 8
+                num_kv_heads: 8
+                use_conditional_norm: false
+                cond_norm_hidden_size: 4
+            ffn_config:
+                hidden_size: 1024
+                use_conditional_norm: false
+                cond_norm_hidden_size: 4
+
+dataset:
+    name: "drivaernet_fullpressure"
+    metaname: "incompressible_fluids/drivaernet_pressure"
+    base_path: "/cluster/work/math/camlab-data/graphnpde/drivaernet/"
+    processed_folder: "processed_pyg_normals"
+    force_recompute_stats: false
+    train_size: 5817
+    val_size: 1148
+    test_size: 1154
+    batch_size: 1
+    num_workers: 4
+    shuffle: true
+    metric_suite: "drivaernet"
+    update_pt_files_with_edges: false
+
+optimizer:
+    name: "adamw"
+    args:
+        lr: 3e-4
+        weight_decay: 1e-05
+        epoch: 50
+        loss_scale: 1.0
+        eval_every_eps: 2
+        scheduler: "mix"
+        max_lr: 5e-4
+        min_lr: 1e-4
+        final_lr: 5e-5
+        save_every_epochs: 100
+
+path:
+    ckpt_path: ".ckpt/drivaernet/gaot/pressure.pt"
+    loss_path: ".loss/drivaernet/gaot/pressure.png"
+    result_path: ".results/drivaernet/gaot/pressure.png"
+    database_path: ".database/drivaernet/gaot/pressure.csv"

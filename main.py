@@ -12,9 +12,31 @@ from multiprocessing import Pool,Process
 import subprocess
 import platform
 import torch.distributed as dist
+import logging
 
 from src.trainer.stat import StaticTrainer3D
 
+def setup_logging(level: str = "INFO", log_file: str = None) -> None:
+    """
+    Initialize root logging config.
+    - level: str or int, default INFO. Examples: "DEBUG", "INFO", "WARNING", "ERROR".
+    - log_file: optional file path to store logs; if None, logs only to console
+    """
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.INFO)
+    handlers = [logging.StreamHandler()]
+    if log_file is not None:
+        try:
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            handlers.append(logging.FileHandler(log_file))
+        except Exception:
+            pass
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=handlers
+    )
 
 class FileParser:
     def __init__(self, filename):
@@ -22,6 +44,9 @@ class FileParser:
             with open(filename) as f:
                 self.kwargs = OmegaConf.load(f)
         elif filename.endswith(".json"):
+            with open(filename) as f:
+                self.kwargs = OmegaConf.load(f)
+        elif filename.endswith(".yaml"):
             with open(filename) as f:
                 self.kwargs = OmegaConf.load(f)
         else:
@@ -62,14 +87,14 @@ def parse_files():
         args.arg_files = []
         for root, dirs, files in os.walk(args.folder):
             for name in files:
-                if name.endswith(".toml") or name.endswith(".json"):
+                if name.endswith(".toml") or name.endswith(".json") or name.endswith(".yaml"):
                     args.arg_files.append(os.path.join(root, name))
     return args
 
-def run_arg(arg):
+def prepare_arg(arg):
     # make sure all paths are exist
     basepath = os.path.dirname(os.path.abspath(__file__))
-    for _path in ["ckpt_path", "loss_path", "result_path", "database_path"]:
+    for _path in arg.path.keys():
         if os.path.isabs(arg.path[_path]):
             continue
         _abspath = os.path.join(basepath, arg.path[_path])
@@ -92,20 +117,46 @@ def run_arg(arg):
     arg.datarow['relative error (auto2)'] = np.nan
     arg.datarow['relative error (auto4)'] = np.nan
 
+    return arg
+
+def run_arg(arg):
+    arg = prepare_arg(arg)
+    log_level = os.environ.get("LOG_LEVEL", "INFO")
+    log_file = os.environ.get("LOG_FILE", None) or arg.path.get("log_path", None)
+    setup_logging(level=log_level, log_file=log_file) 
+
+
     Trainer = {
         "static3d": StaticTrainer3D,
-    }[arg.setup["trainer_name"]]
+    }[arg.setup.trainer_name]
     t = Trainer(arg)
-    if arg.setup["train"]:
-        if arg.setup["ckpt"]:
+
+    if arg.setup.train:
+        # Load model checkpoint with priority: artifact > resume_from_ckpt > ckpt
+        if getattr(arg.setup, "resume_from_artifact", None) is not None:
+            metadata = t.load_from_artifact(arg.setup.resume_from_artifact)
+            if metadata:
+                logging.getLogger(__name__).info(f"Loaded from artifact: {metadata}")
+            else:
+                logging.getLogger(__name__).warning(f"Failed to load from artifact, skipping...")
+        elif getattr(arg.setup, "resume_from_ckpt", None) is not None:
+            t.load_ckpt(path=arg.setup.resume_from_ckpt)
+        elif arg.setup.ckpt:
             t.load_ckpt()
         t.fit()
     if arg.setup["test"]:
-        t.load_ckpt()
-        if arg.setup["use_variance_test"]:
-            t.variance_test()
+        if getattr(arg.setup, "resume_from_artifact", None) is not None:
+            metadata = t.load_from_artifact(arg.setup.resume_from_artifact)
+            if metadata:
+                logging.getLogger(__name__).info(f"Loaded from artifact: {metadata}")
+            else:
+                logging.getLogger(__name__).warning(f"Failed to load from artifact, skipping...")
+        elif getattr(arg.setup, "resume_from_ckpt", None) is not None:
+            t.load_ckpt(path=arg.setup.resume_from_ckpt)
         else:
-            t.test()
+            t.load_ckpt()
+        t.test()
+
 
     if getattr(arg.setup, "rank", 0) == 0:
         if os.path.exists(arg.path["database_path"]):

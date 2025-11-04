@@ -26,7 +26,7 @@ class MAGNOConfig:
     gno_radius: float = 0.033                       # Radius for neighbor finding
     ## MAGNOEncoder
     lifting_channels: int = 16                      # Number of channels in the lifting MLP
-    encoder_feature_attr: str = 'x'                 # Feature attribute name for the encoder
+    encoder_feature_attr: Any = 'x'                 # Feature attribute name for the encoder, supports str or list of str
     in_gno_channel_mlp_hidden_layers: list = field(default_factory=lambda: [64, 64, 64]) # Hidden layers in the GNO encoder MLP
     in_gno_transform_type: str = 'linear'           # Transformation type for the GNO encoder MLP
     ## MAGNODecoder
@@ -62,7 +62,8 @@ class MAGNOConfig:
                                        # Available strategies: ['radius', 'knn', 'bidirectional', 'reverse'] for decoder
     k_neighbors: int = 1               # Number of nearest neighbors for knn strategy
     # Dataset
-    precompute_edges: bool = True                      # Flag for model to load vs compute edges. This aligns with the update_pt_files_with_edges in DatasetConfig
+    precompute_edges: bool = True                            # Flag for model to load vs compute edges. This aligns with the update_pt_files_with_edges in DatasetConfig
+    asynchronous_graph_building: bool = False                # Flag for model to build graphs in the ddataloader. This aligns with the precompute_edges 
 
 
 ############
@@ -481,11 +482,21 @@ class MAGNOEncoder(nn.Module):
         device = phys_pos.device
         num_graphs = batch.num_graphs
         num_latent_tokens_per_graph = latent_tokens_pos.shape[0] // num_graphs # Calculate M
-
-        phys_feat = getattr(batch, self.feature_attr_name, None)
-        if phys_feat is None:
-            if self.use_gno:
-                raise AttributeError(f"MAGNOEncoder requires feature attribute '{self.feature_attr_name}' but it was not found in the batch.")
+        if isinstance(self.feature_attr_name, list):
+            phys_feats = []
+            for attr_name in self.feature_attr_name:
+                feat = getattr(batch, attr_name, None)
+                if feat is None:
+                    if self.use_gno:
+                        raise AttributeError(f"MAGNOEncoder requires feature attribute '{attr_name}' but it was not found in the batch.")
+                else:
+                    phys_feats.append(feat)
+            phys_feat = torch.cat(phys_feats, dim=-1) if phys_feats else None
+        else:
+            phys_feat = getattr(batch, self.feature_attr_name, None)
+            if phys_feat is None:
+                if self.use_gno:
+                    raise AttributeError(f"MAGNOEncoder requires feature attribute '{self.feature_attr_name}' but it was not found in the batch.")
         # --- Multi-Scale GNO encoding ---
         encoded_scales = []
         for scale_idx, scale in enumerate(self.scales):
