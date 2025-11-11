@@ -88,25 +88,25 @@ class TrainerBase:
         logger = logging.getLogger(__name__)
         
         # --- START: MODIFICATIONS FOR SLURM ---
-        if 'SLURM_PROCID' in os.environ:
-            # Running on Slurm, retrieve settings from Slurm environment variables
-            self.setup_config.rank = int(os.environ['SLURM_PROCID'])
-            self.setup_config.world_size = int(os.environ['SLURM_NPROCS'])
-            self.setup_config.local_rank = int(os.environ['SLURM_LOCALID'])
+        # if 'SLURM_PROCID' in os.environ:
+        #     # Running on Slurm, retrieve settings from Slurm environment variables
+        #     self.setup_config.rank = int(os.environ['SLURM_PROCID'])
+        #     self.setup_config.world_size = int(os.environ['SLURM_NPROCS'])
+        #     self.setup_config.local_rank = int(os.environ['SLURM_LOCALID'])
             
-            # PyTorch's init_process_group uses these standard variables, so we set them.
-            os.environ['RANK'] = str(self.setup_config.rank)
-            os.environ['WORLD_SIZE'] = str(self.setup_config.world_size)
-            os.environ['LOCAL_RANK'] = str(self.setup_config.local_rank)
+        #     # PyTorch's init_process_group uses these standard variables, so we set them.
+        #     os.environ['RANK'] = str(self.setup_config.rank)
+        #     os.environ['WORLD_SIZE'] = str(self.setup_config.world_size)
+        #     os.environ['LOCAL_RANK'] = str(self.setup_config.local_rank)
             
-            # The master address and port are needed for synchronization.
-            # srun typically handles this, but it's robust to set it explicitly.
-            # The master is always rank 0.
-            host = os.environ['SLURM_STEP_NODELIST'].split(' ')[0]
-            os.environ['MASTER_ADDR'] = host
-            os.environ['MASTER_PORT'] = '29500' # A standard free port
+        #     # The master address and port are needed for synchronization.
+        #     # srun typically handles this, but it's robust to set it explicitly.
+        #     # The master is always rank 0.
+        #     host = os.environ['SLURM_STEP_NODELIST'].split(' ')[0]
+        #     os.environ['MASTER_ADDR'] = host
+        #     os.environ['MASTER_PORT'] = '29500' # A standard free port
 
-        elif 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
             self.setup_config.rank = int(os.environ['RANK'])
             self.setup_config.world_size = int(os.environ['WORLD_SIZE'])
             self.setup_config.local_rank = int(os.environ['LOCAL_RANK'])  # 移除默认值，如果没有设置应该报错

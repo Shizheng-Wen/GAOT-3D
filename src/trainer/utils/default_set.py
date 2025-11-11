@@ -31,6 +31,22 @@ class SetUpConfig:
     local_rank: int = 0                                                 # Local rank of the current process in distributed training
     backend: str = "nccl"                                               # Backend for distributed training, e.g., 'nccl' (NVIDIA Collective Communications Library)
 
+    # Weights & Biases logging
+    wandb: bool = False                                          # Enable Weights & Biases logging
+    wandb_project: Optional[str] = None                          # W&B project name
+    wandb_entity: Optional[str] = None                           # W&B entity (team/user)
+    wandb_run_name: Optional[str] = None                         # Run name
+    wandb_group: Optional[str] = None                            # Group name for runs
+    wandb_mode: str = "online"                                   # 'online' | 'offline' | 'disabled'
+    wandb_notes: Optional[str] = None                            # Notes for the run
+    wandb_tags: List[str] = field(default_factory=list)          # Tags for the run
+    wandb_watch_model: bool = False                              # Watch model gradients/parameters
+    wandb_log_interval: int = 1                                  # Log interval in epochs (usually align with eval_every_eps)
+    
+    # Model checkpoint management with wandb artifacts
+    resume_from_artifact: Optional[str] = None                   # Load model from wandb artifact (e.g., "model-name:best")
+    test_during_training: bool = False                           # Run test during training when checkpoints are saved
+    
 @dataclass
 class ModelArgsConfig:
     latent_tokens: Tuple[int, int, int] = (64, 64, 64)                         # Size (D, H, W) of latent tokens

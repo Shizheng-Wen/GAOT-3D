@@ -580,23 +580,23 @@ class StaticTrainer3D(TrainerBase):
         all_batch_preds_denorm = []
         plot_coords, plot_gtr, plot_prd = None, None, None 
         
-        # 推理速度测量变量
-        inference_times = []  # 存储每次推理的时间
-        data_loading_times = []  # 存储数据加载时间  
+        # Inference speed measurement variables
+        inference_times = []  # Store inference time for each step
+        data_loading_times = []  # Store data loading time for each step
         total_samples = 0
         
         logging.getLogger(__name__).info(f"Starting testing with metric suite: '{metric_suite}'")
 
         with torch.no_grad():
             for i, batch in enumerate(self.test_loader):
-                # 记录数据加载开始时间
+                # Record data loading start time
                 data_start_time = time.time()
                 
-                # 数据移动到设备
+                # Move data to device
                 batch = batch.to(self.device)
                 latent_tokens_dev = self.latent_tokens.to(self.device)
                 
-                # GPU同步以确保数据传输完成
+                # GPU sync to ensure data transfer is complete
                 if self.device.type == 'cuda':
                     torch.cuda.synchronize()
                 
@@ -604,13 +604,13 @@ class StaticTrainer3D(TrainerBase):
                 data_loading_time = data_end_time - data_start_time
                 data_loading_times.append(data_loading_time)
                 
-                # 记录推理开始时间
+                # Record inference start time
                 inference_start_time = time.time()
                 
-                # 模型推理
+                # Model inference
                 pred_norm = self.model(batch, latent_tokens_dev)
                 
-                # GPU同步以确保推理完成
+                # GPU sync to ensure inference is complete
                 if self.device.type == 'cuda':
                     torch.cuda.synchronize()
                 
@@ -618,7 +618,7 @@ class StaticTrainer3D(TrainerBase):
                 inference_time = inference_end_time - inference_start_time
                 inference_times.append(inference_time)
                 
-                # 统计样本数量
+                # Count samples
                 batch_size = batch.num_graphs if hasattr(batch, 'num_graphs') else 1
                 total_samples += batch_size
                 
@@ -642,14 +642,14 @@ class StaticTrainer3D(TrainerBase):
                             f"coords shape {plot_coords.shape}, gtr shape {plot_gtr.shape}, prd shape {plot_prd.shape}"
                         )
                 
-                # 每10个批次输出一次进度信息（包含推理速度）
+                # Output progress every 10 batches (including inference speed info)
                 if (i + 1) % 10 == 0 and self.setup_config.rank == 0:
-                    current_avg_inference_time = statistics.mean(inference_times[-10:])  # 最近10次的平均时间
-                    throughput = 1.0 / current_avg_inference_time  # 每秒处理的样本数（假设batch_size=1）
+                    current_avg_inference_time = statistics.mean(inference_times[-10:])  # Average inference time of the last 10 steps
+                    throughput = 1.0 / current_avg_inference_time  # Samples per second (assuming batch_size=1)
                     logging.getLogger(__name__).info(
-                        f"已处理 {i + 1} 个批次, "
-                        f"当前平均推理时间: {current_avg_inference_time*1000:.2f}ms, "
-                        f"推理吞吐量: {throughput:.2f} samples/s"
+                        f"Processed {i + 1} batches, "
+                        f"Current average inference time: {current_avg_inference_time*1000:.2f}ms, "
+                        f"Inference throughput: {throughput:.2f} samples/s"
                     )
 
         if self.setup_config.rank == 0:
@@ -657,54 +657,54 @@ class StaticTrainer3D(TrainerBase):
             full_targets = torch.cat(all_batch_targets_denorm, dim=0)
             logging.getLogger(__name__).info(f"Concatenated results: preds shape {full_preds.shape}, targets shape {full_targets.shape}")
             
-            # --- 推理速度统计报告 ---
+            # --- Inference Speed Statistics Report ---
             if inference_times:
-                # 计算推理时间统计
+                # Calculate inference time statistics
                 total_inference_time = sum(inference_times)
                 avg_inference_time = statistics.mean(inference_times)
                 median_inference_time = statistics.median(inference_times)
                 min_inference_time = min(inference_times)
                 max_inference_time = max(inference_times)
                 std_inference_time = statistics.stdev(inference_times) if len(inference_times) > 1 else 0.0
-                
-                # 计算数据加载时间统计
+
+                # Calculate data loading time statistics
                 total_data_loading_time = sum(data_loading_times)
                 avg_data_loading_time = statistics.mean(data_loading_times)
-                
-                # 计算吞吐量
+
+                # Calculate throughput
                 total_test_time = total_inference_time + total_data_loading_time
                 overall_throughput = total_samples / total_test_time
                 inference_throughput = total_samples / total_inference_time
-                
-                # 输出详细的推理速度报告
+
+                # Output detailed inference speed report
                 logging.getLogger(__name__).info("=" * 60)
-                logging.getLogger(__name__).info("推理速度性能报告")
+                logging.getLogger(__name__).info("Inference Speed Performance Report")
                 logging.getLogger(__name__).info("=" * 60)
-                logging.getLogger(__name__).info(f"总测试样本数: {total_samples}")
-                logging.getLogger(__name__).info(f"总批次数: {len(inference_times)}")
+                logging.getLogger(__name__).info(f"Total number of test samples: {total_samples}")
+                logging.getLogger(__name__).info(f"Total number of batches: {len(inference_times)}")
                 logging.getLogger(__name__).info("")
-                logging.getLogger(__name__).info("推理时间统计:")
-                logging.getLogger(__name__).info(f"  总推理时间: {total_inference_time:.4f}s")
-                logging.getLogger(__name__).info(f"  平均推理时间: {avg_inference_time*1000:.2f}ms")
-                logging.getLogger(__name__).info(f"  中位数推理时间: {median_inference_time*1000:.2f}ms")
-                logging.getLogger(__name__).info(f"  最小推理时间: {min_inference_time*1000:.2f}ms")
-                logging.getLogger(__name__).info(f"  最大推理时间: {max_inference_time*1000:.2f}ms")
-                logging.getLogger(__name__).info(f"  推理时间标准差: {std_inference_time*1000:.2f}ms")
+                logging.getLogger(__name__).info("Inference Time Statistics:")
+                logging.getLogger(__name__).info(f"  Total inference time: {total_inference_time:.4f}s")
+                logging.getLogger(__name__).info(f"  Average inference time: {avg_inference_time*1000:.2f}ms")
+                logging.getLogger(__name__).info(f"  Median inference time: {median_inference_time*1000:.2f}ms")
+                logging.getLogger(__name__).info(f"  Minimum inference time: {min_inference_time*1000:.2f}ms")
+                logging.getLogger(__name__).info(f"  Maximum inference time: {max_inference_time*1000:.2f}ms")
+                logging.getLogger(__name__).info(f"  Inference time std dev: {std_inference_time*1000:.2f}ms")
                 logging.getLogger(__name__).info("")
-                logging.getLogger(__name__).info("数据加载时间统计:")
-                logging.getLogger(__name__).info(f"  总数据加载时间: {total_data_loading_time:.4f}s")
-                logging.getLogger(__name__).info(f"  平均数据加载时间: {avg_data_loading_time*1000:.2f}ms")
+                logging.getLogger(__name__).info("Data Loading Time Statistics:")
+                logging.getLogger(__name__).info(f"  Total data loading time: {total_data_loading_time:.4f}s")
+                logging.getLogger(__name__).info(f"  Average data loading time: {avg_data_loading_time*1000:.2f}ms")
                 logging.getLogger(__name__).info("")
-                logging.getLogger(__name__).info("吞吐量统计:")
-                logging.getLogger(__name__).info(f"  纯推理吞吐量: {inference_throughput:.2f} samples/s")
-                logging.getLogger(__name__).info(f"  总体吞吐量: {overall_throughput:.2f} samples/s")
-                logging.getLogger(__name__).info(f"  每秒处理批次数: {len(inference_times)/total_test_time:.2f} batches/s")
+                logging.getLogger(__name__).info("Throughput Statistics:")
+                logging.getLogger(__name__).info(f"  Inference throughput only: {inference_throughput:.2f} samples/s")
+                logging.getLogger(__name__).info(f"  Overall throughput: {overall_throughput:.2f} samples/s")
+                logging.getLogger(__name__).info(f"  Batches processed per second: {len(inference_times)/total_test_time:.2f} batches/s")
                 logging.getLogger(__name__).info("")
-                logging.getLogger(__name__).info("性能比例:")
+                logging.getLogger(__name__).info("Performance Ratio:")
                 data_loading_ratio = (total_data_loading_time / total_test_time) * 100
                 inference_ratio = (total_inference_time / total_test_time) * 100
-                logging.getLogger(__name__).info(f"  数据加载时间占比: {data_loading_ratio:.1f}%")
-                logging.getLogger(__name__).info(f"  推理时间占比: {inference_ratio:.1f}%")
+                logging.getLogger(__name__).info(f"  Data loading time ratio: {data_loading_ratio:.1f}%")
+                logging.getLogger(__name__).info(f"  Inference time ratio: {inference_ratio:.1f}%")
                 logging.getLogger(__name__).info("=" * 60)
 
             # --- Calculate Metrics ---
