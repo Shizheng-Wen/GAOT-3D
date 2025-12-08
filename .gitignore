@@ -36,7 +36,6 @@ logs/*
 .loss/
 .results/
 scripts/
-dataset/
 analysis/
 TODO.md
 
