@@ -83,15 +83,15 @@ dataset:
 optimizer:
     name: "adamw"
     args:
-        lr: 3e-4
+        lr: 8e-4
         weight_decay: 1e-05
         epoch: 50
         loss_scale: 1.0
         eval_every_eps: 2
         scheduler: "mix"
-        max_lr: 5e-4
-        min_lr: 1e-4
-        final_lr: 5e-5
+        max_lr: 1e-3
+        min_lr: 5e-4
+        final_lr: 1e-4
         save_every_epochs: 100
 
 path:
